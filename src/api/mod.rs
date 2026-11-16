@@ -37,6 +37,8 @@ pub enum ApiError {
     Rejected(u16, String),
     Server(u16),
     Parse(String),
+    /// A batch write that stopped partway; the text says how far it got.
+    Partial(String),
 }
 
 impl fmt::Display for ApiError {
@@ -55,6 +57,7 @@ impl fmt::Display for ApiError {
             }
             ApiError::Server(status) => write!(f, "server error (HTTP {status})"),
             ApiError::Parse(detail) => write!(f, "unexpected response: {detail}"),
+            ApiError::Partial(detail) => write!(f, "{detail}"),
         }
     }
 }

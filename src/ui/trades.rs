@@ -37,8 +37,9 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
             } else {
                 muted(ui, &format!("{} trade(s) loaded", page.items.len()));
                 ui.add_space(4.0);
+                // Measured once, so the rows do not creep wider one by one.
+                let width = (ui.available_width() - 16.0).max(320.0);
                 for trade in &page.items {
-                    let width = (ui.available_width() - 16.0).max(320.0);
                     let icon = page.icons.get(&trade.partner_id).cloned();
                     ui::tile(ui, width, |ui| {
                         ui.horizontal(|ui| {

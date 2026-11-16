@@ -134,6 +134,6 @@ pub fn show(app: &mut App, _cx: &Ctx, ui: &mut Ui) {
     );
     muted(
         ui,
-        "Writes so far: follow and unfollow, friend requests (send, accept, decline) and unfriending, favourites, your status, message read state, sending private messages and replies, accepting or declining inbound trades, and listing collectibles for sale. Each one asks for confirmation before anything is sent.",
+        "Writes so far: follow and unfollow, friend requests (send, accept, decline) and unfriending, favourites, your status, message read state and archiving, sending private messages and replies, accepting or declining inbound trades, and listing collectibles for sale. Each one asks for confirmation before anything is sent.",
     );
 }

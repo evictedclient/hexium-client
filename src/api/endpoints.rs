@@ -1054,3 +1054,56 @@ pub async fn set_resale_price(client: &ApiClient, asset: u64, user_asset_id: u64
         .await?;
     Ok(())
 }
+
+/// `api-messages.js` `setArchivedStatus`: POST `archive` / `unarchive` with
+/// `{ messageIds }`.
+pub async fn set_messages_archived(client: &ApiClient, ids: &[u64], archive: bool) -> Result<()> {
+    let action = if archive { "archive" } else { "unarchive" };
+    client
+        .post(
+            &api("privatemessages", &format!("/v1/messages/{action}")),
+            Some(json!({ "messageIds": ids })),
+        )
+        .await?;
+    Ok(())
+}
+
+/// Every unread message id in the inbox, across all pages, not just the ones on
+/// screen. Stops after 50 pages (1,000 messages) as a safety limit.
+pub async fn unread_inbox_ids(client: &ApiClient) -> Result<Vec<u64>> {
+    let mut ids = Vec::new();
+    let mut seen = 0u64;
+    for page in 0..50 {
+        let batch = messages(client, "inbox", page).await?;
+        if batch.items.is_empty() {
+            break;
+        }
+        seen += batch.items.len() as u64;
+        ids.extend(batch.items.iter().filter(|message| !message.is_read).map(|message| message.id));
+        if seen >= batch.total {
+            break;
+        }
+    }
+    ids.sort_unstable();
+    ids.dedup();
+    Ok(ids)
+}
+
+/// Marks many messages read in batches of 20, one request at a time. If a batch
+/// fails, the error says how many were already marked.
+pub async fn mark_all_read(client: &ApiClient, ids: &[u64]) -> Result<()> {
+    let mut done = 0usize;
+    for chunk in ids.chunks(20) {
+        if let Err(error) = set_messages_read(client, chunk, true).await {
+            if done == 0 {
+                return Err(error);
+            }
+            return Err(super::ApiError::Partial(format!(
+                "Marked {done} of {} as read, then the next batch failed: {error}",
+                ids.len()
+            )));
+        }
+        done += chunk.len();
+    }
+    Ok(())
+}

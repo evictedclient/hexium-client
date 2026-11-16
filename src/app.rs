@@ -119,6 +119,7 @@ pub enum Msg {
     FollowState(u64, Res<bool>),
     FriendshipState(u64, Res<String>),
     FriendRequests(Res<models::FriendRequestsBundle>),
+    UnreadIds(Res<Vec<u64>>),
     Resale(u64, Res<models::ResaleInfo>),
     FavouriteState(u64, Res<bool>),
     WriteDone(WriteAction, Res<()>),
@@ -132,6 +133,8 @@ pub enum WriteAction {
     Favourite { asset_id: u64, name: String, favourite: bool },
     SetStatus { status: String },
     MarkRead { message_id: u64, subject: String, read: bool },
+    Archive { message_id: u64, subject: String, archive: bool },
+    MarkAllRead { ids: Vec<u64> },
     RequestFriend { user_id: u64, name: String },
     AcceptFriend { user_id: u64, name: String },
     DeclineFriend { user_id: u64, name: String },
@@ -175,6 +178,9 @@ impl WriteAction {
             WriteAction::SetStatus { .. } => "Change status".to_string(),
             WriteAction::MarkRead { read: true, .. } => "Mark as read".to_string(),
             WriteAction::MarkRead { read: false, .. } => "Mark as unread".to_string(),
+            WriteAction::Archive { archive: true, .. } => "Archive message".to_string(),
+            WriteAction::Archive { archive: false, .. } => "Move to inbox".to_string(),
+            WriteAction::MarkAllRead { .. } => "Mark all as read".to_string(),
             WriteAction::RequestFriend { .. } => "Send friend request".to_string(),
             WriteAction::AcceptFriend { .. } => "Accept friend request".to_string(),
             WriteAction::DeclineFriend { .. } => "Decline friend request".to_string(),
@@ -212,6 +218,20 @@ impl WriteAction {
                 } else {
                     format!("Your status will be set to \"{status}\". Anyone who opens your profile can see it.")
                 }
+            }
+            WriteAction::Archive { subject, archive, .. } => {
+                if *archive {
+                    format!("\"{subject}\" moves to your Archive. You can move it back to the inbox from there.")
+                } else {
+                    format!("\"{subject}\" moves back to your inbox.")
+                }
+            }
+            WriteAction::MarkAllRead { ids } => {
+                let count = ids.len();
+                let noun = if count == 1 { "message" } else { "messages" };
+                format!(
+                    "All {count} unread {noun} in your inbox will be marked as read, including ones not loaded on screen. You can mark any of them unread again one at a time."
+                )
             }
             WriteAction::MarkRead { subject, read, .. } => {
                 let state = if *read { "read" } else { "unread" };
@@ -257,6 +277,9 @@ impl WriteAction {
             WriteAction::SetStatus { .. } => "Save status",
             WriteAction::MarkRead { read: true, .. } => "Mark read",
             WriteAction::MarkRead { read: false, .. } => "Mark unread",
+            WriteAction::Archive { archive: true, .. } => "Archive",
+            WriteAction::Archive { archive: false, .. } => "Move to inbox",
+            WriteAction::MarkAllRead { .. } => "Mark all read",
             WriteAction::RequestFriend { .. } => "Send request",
             WriteAction::AcceptFriend { .. } => "Accept",
             WriteAction::DeclineFriend { .. } => "Decline",
@@ -492,6 +515,8 @@ pub struct MessagesState {
     pub page: u32,
     pub loading_more: bool,
     pub more_error: Option<String>,
+    /// Collecting unread ids for "Mark all as read".
+    pub preparing_all: bool,
 }
 
 #[derive(Default)]
@@ -1159,6 +1184,10 @@ impl App {
                     endpoints::set_favourite(&api, me, *asset_id, *favourite).await
                 }
                 WriteAction::SetStatus { status } => endpoints::set_status(&api, me, status).await,
+                WriteAction::Archive { message_id, archive, .. } => {
+                    endpoints::set_messages_archived(&api, &[*message_id], *archive).await
+                }
+                WriteAction::MarkAllRead { ids } => endpoints::mark_all_read(&api, ids).await,
                 WriteAction::MarkRead { message_id, read, .. } => {
                     endpoints::set_messages_read(&api, &[*message_id], *read).await
                 }
@@ -1249,6 +1278,34 @@ impl App {
                 } else {
                     "Status updated.".to_string()
                 }
+            }
+            WriteAction::Archive { message_id, subject, archive } => {
+                // It now lives in the other tab, so it leaves this one.
+                if let Load::Ready(page) = &mut self.messages.data {
+                    let before = page.items.len();
+                    page.items.retain(|message| message.id != *message_id);
+                    if page.items.len() < before {
+                        page.total = page.total.saturating_sub(1);
+                    }
+                }
+                self.load_session();
+                if *archive {
+                    format!("Moved \"{subject}\" to Archive.")
+                } else {
+                    format!("Moved \"{subject}\" back to your inbox.")
+                }
+            }
+            WriteAction::MarkAllRead { ids } => {
+                if self.messages_tab() == "inbox" {
+                    if let Load::Ready(page) = &mut self.messages.data {
+                        for message in &mut page.items {
+                            message.is_read = true;
+                        }
+                    }
+                }
+                self.load_session();
+                let noun = if ids.len() == 1 { "message" } else { "messages" };
+                format!("Marked {} {noun} as read.", ids.len())
             }
             WriteAction::MarkRead { message_id, read, .. } => {
                 if let Load::Ready(page) = &mut self.messages.data {
@@ -1409,6 +1466,23 @@ impl App {
             Msg::Resale(
                 copy,
                 endpoints::resale_info(&api, me, asset, copy)
+                    .await
+                    .map_err(|error| error.to_string()),
+            )
+        });
+    }
+
+    /// Gathers every unread inbox id, then opens the confirmation with the count.
+    pub fn prepare_mark_all_read(&mut self) {
+        if self.messages.preparing_all {
+            return;
+        }
+        self.messages.preparing_all = true;
+        let cx = self.cx();
+        let api = cx.api.clone();
+        cx.spawn(async move {
+            Msg::UnreadIds(
+                endpoints::unread_inbox_ids(&api)
                     .await
                     .map_err(|error| error.to_string()),
             )
@@ -1655,6 +1729,18 @@ impl App {
                 }
             }
             Msg::Messages(result) => self.messages.data = into_load(result),
+            Msg::UnreadIds(result) => {
+                self.messages.preparing_all = false;
+                match result {
+                    Ok(ids) if ids.is_empty() => {
+                        self.notice = Some((true, "Nothing unread in your inbox.".to_string()));
+                    }
+                    Ok(ids) => self.ask(WriteAction::MarkAllRead { ids }),
+                    Err(error) => {
+                        self.notice = Some((false, format!("Could not find your unread messages: {error}")));
+                    }
+                }
+            }
             Msg::MessagesMore(result) => {
                 self.messages.loading_more = false;
                 match result {
@@ -1848,6 +1934,14 @@ mod tests {
         assert!(change.ends_with("(yours would cost more)"));
         let remove = resale_summary("DJ Money", None, 200, None, Some(250), None);
         assert!(remove.contains("comes off sale"));
+    }
+
+    #[test]
+    fn mark_all_read_summary_counts() {
+        let text = WriteAction::MarkAllRead { ids: vec![1, 2, 3] }.description();
+        assert!(text.starts_with("All 3 unread messages in your inbox"));
+        let one = WriteAction::MarkAllRead { ids: vec![7] }.description();
+        assert!(one.starts_with("All 1 unread message in your inbox"));
     }
 
     #[test]

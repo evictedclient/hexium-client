@@ -9,7 +9,7 @@ pub fn show(app: &mut App, _cx: &Ctx, ui: &mut Ui) {
     app.load_messages();
 
     h1(ui, "Messages");
-    muted(ui, "Your inbox. Reply to people here; start a new message from someone's profile.");
+    muted(ui, "Your inbox. Reply, archive or mark things read here; start a new message from someone's profile.");
     ui.add_space(8.0);
 
     let current = app.messages_tab();
@@ -39,7 +39,27 @@ pub fn show(app: &mut App, _cx: &Ctx, ui: &mut Ui) {
             if unread > 0 {
                 summary.push_str(&format!(" · {unread} unread"));
             }
-            muted(ui, &summary);
+            ui.horizontal(|ui| {
+                muted(ui, &summary);
+                if current == "inbox" {
+                    let account_unread = app
+                        .session
+                        .ready()
+                        .map(|session| session.counts.unread)
+                        .unwrap_or(unread as u64);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if app.messages.preparing_all {
+                            ui.add(egui::Spinner::new().size(13.0).color(accent()));
+                            muted(ui, "Finding unread messages…");
+                        } else if ui
+                            .add_enabled(account_unread > 0, egui::Button::new("Mark all as read…"))
+                            .clicked()
+                        {
+                            app.prepare_mark_all_read();
+                        }
+                    });
+                }
+            });
             ui.add_space(4.0);
 
             let sent = current == "sent";
@@ -48,8 +68,10 @@ pub fn show(app: &mut App, _cx: &Ctx, ui: &mut Ui) {
             let mut open_profile: Option<u64> = None;
             let mut ask: Option<WriteAction> = None;
             let mut reply: Option<crate::api::models::Message> = None;
+            // Measured once: inside the loop each card would see the previous one's width
+            // and the rows would creep wider.
+            let width = (ui.available_width() - 16.0).max(320.0);
             for message in &page.items {
-                let width = (ui.available_width() - 16.0).max(320.0);
                 ui::tile(ui, width, |ui| {
                     ui.horizontal(|ui| {
                         if !message.is_read {
@@ -73,6 +95,17 @@ pub fn show(app: &mut App, _cx: &Ctx, ui: &mut Ui) {
                                         message_id: message.id,
                                         subject: subject.to_string(),
                                         read: !read,
+                                    });
+                                }
+                                let archive = current == "inbox";
+                                if ui
+                                    .small_button(if archive { "Archive" } else { "Move to inbox" })
+                                    .clicked()
+                                {
+                                    ask = Some(WriteAction::Archive {
+                                        message_id: message.id,
+                                        subject: subject.to_string(),
+                                        archive,
                                     });
                                 }
                                 // System notices come from the site itself; there is no one to answer.
