@@ -31,6 +31,9 @@ pub struct Config {
     /// Windows notifications for new trades, friend requests and messages.
     #[serde(default = "default_true")]
     pub activity_notifications: bool,
+    /// Limiteds to watch, each with the price to be told about.
+    #[serde(default)]
+    pub watchlist: Vec<WatchItem>,
     /// Closing the window hides it to the tray instead of quitting.
     #[serde(default = "default_true")]
     pub close_to_tray: bool,
@@ -76,6 +79,7 @@ impl Default for Config {
             chat_notifications: true,
             close_to_tray: true,
             activity_notifications: true,
+            watchlist: Vec::new(),
             shortcut_exe: None,
         }
     }
@@ -146,4 +150,12 @@ impl Config {
             format!("stored · {} chars · …{tail}", cookie.chars().count())
         })
     }
+}
+
+/// A watched limited: alert when its cheapest reseller is at or below `target`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WatchItem {
+    pub asset_id: u64,
+    pub name: String,
+    pub target: u64,
 }

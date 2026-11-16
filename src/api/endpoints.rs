@@ -1609,3 +1609,16 @@ mod trade_tests {
         assert_eq!(paid["offers"][1]["robux"], 30);
     }
 }
+
+/// The cheapest reseller's price of a limited (`None` when nobody sells one).
+pub async fn cheapest_resale(client: &ApiClient, asset: u64) -> Result<Option<u64>> {
+    let query = [("limit", "10".to_string()), ("cursor", String::new())];
+    let value = client
+        .get_query(&api("economy", &format!("/v1/assets/{asset}/resellers")), &query)
+        .await?;
+    Ok(first_array(&value, &["data"])
+        .iter()
+        .map(|listing| num_at(listing, "price"))
+        .filter(|price| *price > 0)
+        .min())
+}

@@ -55,6 +55,7 @@ pub fn window(app: &mut App, cx: &Ctx, ctx: &egui::Context) {
                     &give,
                     &mut filter_mine,
                     &mut toggle_mine,
+                    &app.values,
                 );
                 side_column(
                     &mut columns[1],
@@ -66,6 +67,7 @@ pub fn window(app: &mut App, cx: &Ctx, ctx: &egui::Context) {
                     &get,
                     &mut filter_theirs,
                     &mut toggle_theirs,
+                    &app.values,
                 );
             });
 
@@ -116,8 +118,8 @@ pub fn window(app: &mut App, cx: &Ctx, ctx: &egui::Context) {
             }
 
             // Totals and the send button.
-            let mut give_side = side_of(&builder.mine, &builder.give);
-            let mut get_side = side_of(&builder.theirs, &builder.get);
+            let mut give_side = side_of(&builder.mine, &builder.give, &app.values);
+            let mut get_side = side_of(&builder.theirs, &builder.get, &app.values);
             give_side.robux = (give_robux > 0).then_some(give_robux);
             get_side.robux = (get_robux > 0).then_some(get_robux);
             ui.add_space(8.0);
@@ -135,9 +137,30 @@ pub fn window(app: &mut App, cx: &Ctx, ctx: &egui::Context) {
                 };
                 ui.label(RichText::new(text).font(ui::semibold(14.0)).color(color));
             });
+            // The analyzer: by Heximons value as well as RAP, Robux included.
+            if !app.values.items.is_empty() && (!builder.give.is_empty() || !builder.get.is_empty()) {
+                let weak = match &builder.theirs {
+                    Load::Ready(inventory) => ui::analyze::weak_demand(
+                        &app.values,
+                        builder
+                            .get
+                            .iter()
+                            .filter_map(|id| inventory.items.iter().find(|item| item.user_asset_id == *id))
+                            .map(|item| (item.id, item.name.as_str())),
+                    ),
+                    _ => Vec::new(),
+                };
+                ui.add_space(4.0);
+                ui::analyze::verdict(
+                    ui,
+                    ui::analyze::Side { rap: give_side.rap, value: give_side.value, robux: give_robux },
+                    ui::analyze::Side { rap: get_side.rap, value: get_side.value, robux: get_robux },
+                    &weak,
+                );
+            }
             ui.add_space(6.0);
             ui.horizontal(|ui| {
-                let ready = !builder.give.is_empty() && !builder.get.is_empty() && !over_balance;
+                let ready =!builder.give.is_empty() && !builder.get.is_empty() && !over_balance;
                 let label = if builder.counter_of.is_some() { "Send counter…" } else { "Send trade…" };
                 let button = egui::Button::new(
                     RichText::new(label).font(ui::semibold(13.5)).color(egui::Color32::from_rgb(18, 18, 20)),
@@ -194,6 +217,7 @@ fn side_column(
     picked: &[u64],
     filter: &mut String,
     clicked: &mut Option<u64>,
+    values: &crate::values::Values,
 ) {
     ui.horizontal(|ui| {
         ui::eyebrow(ui, heading);
@@ -239,7 +263,7 @@ fn side_column(
                         }
                         shown += 1;
                         let icon = inventory.icons.get(&item.id).cloned();
-                        if item_row(ui, thumbs, cx, item, icon.as_deref(), selected, full) {
+                        if item_row(ui, thumbs, cx, item, icon.as_deref(), selected, full, values) {
                             *clicked = Some(item.user_asset_id);
                         }
                     }
@@ -263,6 +287,7 @@ fn item_row(
     icon: Option<&str>,
     selected: bool,
     full: bool,
+    values: &crate::values::Values,
 ) -> bool {
     let available = selected || !full;
     let fill = if selected { ui::tint(accent(), 46) } else { ui::card() };
@@ -291,6 +316,7 @@ fn item_row(
                             ui.label(RichText::new(format!("#{serial}")).size(11.0).color(MUTED));
                         }
                     });
+                    ui::analyze::value_line(ui, values, item.id);
                 });
                 if selected {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -319,19 +345,28 @@ fn toggle(picked: &mut Vec<u64>, clicked: Option<u64>) {
 }
 
 /// The picked copies as the confirmation dialog shows them.
-fn side_of(inventory: &Load<TradeInventory>, picked: &[u64]) -> TradeSide {
+fn side_of(inventory: &Load<TradeInventory>, picked: &[u64], values: &crate::values::Values) -> TradeSide {
     let Load::Ready(inventory) = inventory else {
         return TradeSide::default();
     };
-    let items: Vec<(String, u64, Option<u64>)> = picked
+    let copies: Vec<&Collectible> = picked
         .iter()
         .filter_map(|id| inventory.items.iter().find(|item| item.user_asset_id == *id))
+        .collect();
+    let value = if values.items.is_empty() {
+        0
+    } else {
+        copies.iter().map(|item| values.value_or(item.id, item.rap)).sum()
+    };
+    let items: Vec<(String, u64, Option<u64>)> = copies
+        .iter()
         .map(|item| (item.name.clone(), item.rap, item.serial))
         .collect();
     TradeSide {
         rap: items.iter().map(|(_, rap, _)| rap).sum(),
         items,
         robux: None,
+        value,
     }
 }
 
@@ -346,6 +381,13 @@ fn total(ui: &mut Ui, label: &str, side: &TradeSide, count: usize) {
             );
             muted(ui, &format!("{count} item(s)"));
         });
+        if side.value > 0 {
+            ui.label(
+                RichText::new(format!("Value {}", ui::money(side.value as i64)))
+                    .font(ui::semibold(13.0))
+                    .color(GOLD),
+            );
+        }
         if let Some(robux) = side.robux {
             ui.label(
                 RichText::new(format!("+ {} R$", ui::money(robux as i64)))

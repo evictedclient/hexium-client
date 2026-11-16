@@ -796,7 +796,7 @@ async fn run_all(client: &ApiClient) -> Vec<Row> {
     {
         let started = Instant::now();
         let (verdict, detail) = match endpoints::collectibles(client, me).await {
-            Ok(items) => match items.first() {
+            Ok(items) => match items.iter().max_by_key(|item| item.rap) {
                 Some(item) => match endpoints::resellers(client, item.id, None).await {
                     Ok(page) => {
                         let sorted = page.items.windows(2).all(|pair| pair[0].price <= pair[1].price);
@@ -820,7 +820,10 @@ async fn run_all(client: &ApiClient) -> Vec<Row> {
     }
     {
         let started = Instant::now();
-        let first = endpoints::collectibles(client, me).await.ok().and_then(|items| items.first().map(|item| item.id));
+        let first = endpoints::collectibles(client, me)
+            .await
+            .ok()
+            .and_then(|items| items.iter().max_by_key(|item| item.rap).map(|item| item.id));
         let (verdict, detail) = match first {
             Some(asset) => match endpoints::resale_data(client, asset).await {
                 Ok(data) if data.points.is_empty() => (Verdict::Warn, format!("RAP {} · no history points", data.rap)),
@@ -843,6 +846,27 @@ async fn run_all(client: &ApiClient) -> Vec<Row> {
             None => (Verdict::Warn, "skipped · you own no collectibles to look up".to_string()),
         };
         rows.push(Row { name: "economy/v1/assets/{id}/resale-data", detail, verdict, ms: started.elapsed().as_millis() });
+    }
+    // -- heximons.lol values (no cookie sent there) ------------------------------
+    {
+        let started = Instant::now();
+        let (verdict, detail) = match crate::values::fetch().await {
+            Ok(values) => {
+                let valued = values.items.values().filter(|item| item.staff_value.is_some()).count();
+                let mine = endpoints::collectibles(client, me).await.unwrap_or_default();
+                let tracked = mine.iter().filter(|item| values.get(item.id).is_some()).count();
+                (
+                    Verdict::Pass,
+                    format!(
+                        "{} limiteds · {valued} with staff values · {tracked} of your {} collectibles tracked",
+                        values.items.len(),
+                        mine.len()
+                    ),
+                )
+            }
+            Err(error) => (Verdict::Warn, error),
+        };
+        rows.push(Row { name: "heximons.lol values", detail, verdict, ms: started.elapsed().as_millis() });
     }
     rows.push(match crate::play::launcher_registered() {
         Some(command) => Row {

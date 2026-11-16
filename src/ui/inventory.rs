@@ -20,7 +20,30 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
                     &ui::money(bundle.collectibles.len() as i64),
                     GOLD,
                 );
+                let rap: u64 = bundle.collectibles.iter().map(|item| item.rap).sum();
+                ui::stat(ui, "TOTAL RAP", &ui::money(rap as i64), GOLD);
+                if !app.values.items.is_empty() {
+                    let value: u64 = bundle
+                        .collectibles
+                        .iter()
+                        .map(|item| app.values.value_or(item.id, item.rap))
+                        .sum();
+                    ui::stat(ui, "TOTAL VALUE", &ui::money(value as i64), GOLD);
+                }
             });
+
+            if !app.value_history.is_empty() {
+                h2(ui, "Value over time");
+                muted(
+                    ui,
+                    &if app.value_history.len() == 1 {
+                        "Recorded once a day while the client is open; the line fills in over the coming days.".to_string()
+                    } else {
+                        format!("{} days recorded · gold is Heximons value, the accent line is RAP.", app.value_history.len())
+                    },
+                );
+                ui::chart::history(ui, &app.value_history);
+            }
 
             h2(ui, "Collectibles");
             if bundle.collectibles.is_empty() {
@@ -58,6 +81,7 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
                                     ui::pill(ui, &format!("#{serial}"), GOLD);
                                 }
                             });
+                            ui::analyze::value_line(ui, &app.values, item.id);
                         });
                         if card.on_hover_text("Sell or reprice").clicked() && !selected {
                             open = Some((item.clone(), icon));

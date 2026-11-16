@@ -20,6 +20,19 @@ pub enum Kind {
     Trade,
     FriendRequest,
     Message,
+    /// A trade you sent was answered (accepted, declined, countered or expired).
+    TradeResult,
+}
+
+/// What happened to a trade you sent, from its final `status`.
+pub fn outcome(status: &str) -> &'static str {
+    match status.to_ascii_lowercase().as_str() {
+        "completed" | "accepted" => "accepted",
+        "declined" | "rejected" => "declined",
+        "countered" => "countered",
+        "expired" => "expired",
+        _ => "ended",
+    }
 }
 
 /// One new thing: who it is from and a line about it.
@@ -33,11 +46,20 @@ pub struct Item {
 /// become one summary.
 pub fn toast_text(kind: Kind, items: &[Item]) -> Option<(String, String)> {
     let first = items.first()?;
+    if kind == Kind::TradeResult {
+        // One toast per answered trade reads best; several become a summary.
+        if items.len() == 1 {
+            return Some((format!("{} {} your trade", first.from, first.detail), trade_result_body(&first.detail)));
+        }
+        let names: Vec<&str> = items.iter().take(3).map(|item| item.from.as_str()).collect();
+        return Some((format!("{} of your trades were answered", items.len()), format!("From {}", names.join(", "))));
+    }
     if items.len() > 3 {
         let noun = match kind {
             Kind::Trade => "trades",
             Kind::FriendRequest => "friend requests",
             Kind::Message => "messages",
+            Kind::TradeResult => "trade results",
         };
         let names: Vec<&str> = items.iter().take(3).map(|item| item.from.as_str()).collect();
         return Some((
@@ -49,12 +71,23 @@ pub fn toast_text(kind: Kind, items: &[Item]) -> Option<(String, String)> {
         Kind::Trade => format!("Trade from {}", first.from),
         Kind::FriendRequest => format!("Friend request from {}", first.from),
         Kind::Message => format!("Message from {}", first.from),
+        Kind::TradeResult => unreachable!("handled above"),
     };
     let mut body = first.detail.clone();
     if items.len() > 1 {
         body.push_str(&format!(" (+{} more)", items.len() - 1));
     }
     Some((title, body))
+}
+
+fn trade_result_body(outcome: &str) -> String {
+    match outcome {
+        "accepted" => "The items have moved.".to_string(),
+        "declined" => "Nothing changed hands.".to_string(),
+        "countered" => "Their counter offer is in your inbound trades.".to_string(),
+        "expired" => "It ran out before they answered.".to_string(),
+        _ => "It is no longer open.".to_string(),
+    }
 }
 
 /// What has been seen of one list.
@@ -86,6 +119,10 @@ pub struct WatchHandle {
 }
 
 impl WatchHandle {
+    pub fn from_flag(stop: Arc<AtomicBool>) -> Self {
+        Self { stop }
+    }
+
     pub fn stop(&self) {
         self.stop.store(true, Ordering::Relaxed);
     }
@@ -110,6 +147,9 @@ where
         let mut trades = Seen::default();
         let mut requests = Seen::default();
         let mut messages = Seen::default();
+        // Open trades you sent, by id, with the partner's name; `None` until the
+        // first round has recorded them.
+        let mut outbound: Option<std::collections::HashMap<u64, String>> = None;
         while !flag.load(Ordering::Relaxed) {
             let (trade_count, request_count, message_count) = tokio::join!(
                 endpoints::inbound_trade_count(&api),
@@ -192,6 +232,33 @@ where
                 }
             }
 
+            // Trades you sent: one that leaves the open list was answered.
+            if let Ok(page) = endpoints::trades(&api, "outbound", None).await {
+                let open: std::collections::HashMap<u64, String> = page
+                    .items
+                    .iter()
+                    .map(|trade| (trade.id, trade.partner_name.clone()))
+                    .collect();
+                if let Some(before) = &outbound {
+                    let mut results = Vec::new();
+                    for (id, partner) in before {
+                        if open.contains_key(id) {
+                            continue;
+                        }
+                        let status = endpoints::trade_detail(&api, *id)
+                            .await
+                            .map(|detail| detail.status)
+                            .unwrap_or_default();
+                        results.push(Item { from: partner.clone(), detail: outcome(&status).to_string() });
+                    }
+                    if !results.is_empty() {
+                        moved = true;
+                        report(Kind::TradeResult, results);
+                    }
+                }
+                outbound = Some(open);
+            }
+
             if moved {
                 changed();
             }
@@ -235,5 +302,21 @@ mod tests {
             Some(("4 new friend requests".to_string(), "From A, B, C and others".to_string()))
         );
         assert!(toast_text(Kind::Trade, &[]).is_none());
+    }
+
+    #[test]
+    fn trade_results() {
+        assert_eq!(outcome("Completed"), "accepted");
+        assert_eq!(outcome("Declined"), "declined");
+        assert_eq!(outcome("Countered"), "countered");
+        assert_eq!(outcome("Expired"), "expired");
+        assert_eq!(outcome("RejectedDueToError"), "ended");
+        let one = [Item { from: "A".to_string(), detail: "accepted".to_string() }];
+        assert_eq!(
+            toast_text(Kind::TradeResult, &one),
+            Some(("A accepted your trade".to_string(), "The items have moved.".to_string()))
+        );
+        let two = [one[0].clone(), Item { from: "B".to_string(), detail: "declined".to_string() }];
+        assert_eq!(toast_text(Kind::TradeResult, &two).map(|(title, _)| title), Some("2 of your trades were answered".to_string()));
     }
 }

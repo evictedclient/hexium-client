@@ -151,6 +151,12 @@ pub enum Msg {
     GameServers(u64, u64, Res<models::ServerPage>),
     /// A trades / friend requests / messages notification was clicked.
     OpenView(View),
+    /// Heximons values arrived.
+    Values(Res<crate::values::Values>),
+    /// The watchlist read a price.
+    WatchPrice(u64, Option<u64>),
+    /// A watchlist alert was clicked: open that item.
+    OpenItem(u64, String),
     /// The watcher saw a counter move: refresh the badges.
     ActivityChanged,
 }
@@ -390,6 +396,8 @@ pub struct TradeSide {
     pub items: Vec<(String, u64, Option<u64>)>,
     pub rap: u64,
     pub robux: Option<u64>,
+    /// By Heximons value (RAP for untracked items); 0 when values are unknown.
+    pub value: u64,
 }
 
 impl From<&models::TradeOffer> for TradeSide {
@@ -402,6 +410,7 @@ impl From<&models::TradeOffer> for TradeSide {
                 .collect(),
             rap: offer.total_rap(),
             robux: offer.robux,
+            value: 0,
         }
     }
 }
@@ -410,7 +419,7 @@ impl From<&models::TradeOffer> for TradeSide {
 /// item, their RAP totals, and which way the difference goes.
 fn trade_summary(partner: &str, accept: bool, give: &TradeSide, get: &TradeSide) -> String {
     fn side(out: &mut String, heading: &str, side: &TradeSide) {
-        out.push_str(&format!("{heading} (RAP {})\n", group_digits(side.rap)));
+        out.push_str(&format!("{heading} ({})\n", worth(side)));
         if side.items.is_empty() {
             out.push_str("   no items\n");
         }
@@ -441,6 +450,10 @@ fn trade_summary(partner: &str, accept: bool, give: &TradeSide, get: &TradeSide)
         }
         std::cmp::Ordering::Equal => "Both sides are worth the same RAP.".to_string(),
     });
+    if let Some(line) = value_line(give, get) {
+        out.push('\n');
+        out.push_str(&line);
+    }
     out
 }
 
@@ -485,6 +498,27 @@ fn resale_summary(
 }
 
 /// What sending (or countering with) this offer means, with both sides listed.
+/// "RAP 11,442", or "RAP 11,442 · value 15,000" when Heximons values it differently.
+fn worth(side: &TradeSide) -> String {
+    if side.value > 0 && side.value != side.rap {
+        format!("RAP {} · value {}", group_digits(side.rap), group_digits(side.value))
+    } else {
+        format!("RAP {}", group_digits(side.rap))
+    }
+}
+
+/// "By Heximons value you get 3,000 more." when both sides have values.
+fn value_line(give: &TradeSide, get: &TradeSide) -> Option<String> {
+    if give.value == 0 || get.value == 0 {
+        return None;
+    }
+    Some(match get.value.cmp(&give.value) {
+        std::cmp::Ordering::Greater => format!("By Heximons value you get {} more.", group_digits(get.value - give.value)),
+        std::cmp::Ordering::Less => format!("By Heximons value you give {} more.", group_digits(give.value - get.value)),
+        std::cmp::Ordering::Equal => "By Heximons value both sides are even.".to_string(),
+    })
+}
+
 fn offer_summary(partner: &str, counter: bool, give: &TradeSide, get: &TradeSide) -> String {
     let mut out = if counter {
         format!("Send {partner} this counter offer. It replaces their offer, which you can no longer accept.\n\n")
@@ -492,7 +526,7 @@ fn offer_summary(partner: &str, counter: bool, give: &TradeSide, get: &TradeSide
         format!("Send {partner} this trade.\n\n")
     };
     for (heading, side) in [("You give", give), ("You get", get)] {
-        out.push_str(&format!("{heading} (RAP {})\n", group_digits(side.rap)));
+        out.push_str(&format!("{heading} ({})\n", worth(side)));
         if side.items.is_empty() {
             out.push_str("   no items\n");
         }
@@ -514,6 +548,10 @@ fn offer_summary(partner: &str, counter: bool, give: &TradeSide, get: &TradeSide
         }
         std::cmp::Ordering::Equal => "Both sides are worth the same RAP.".to_string(),
     });
+    if let Some(line) = value_line(give, get) {
+        out.push('\n');
+        out.push_str(&line);
+    }
     if give.robux.unwrap_or(0) > 0 {
         out.push_str("\nYour Robux leave your balance only if they accept.");
     }
@@ -628,6 +666,8 @@ pub struct CatalogState {
     /// Its RAP and sales history.
     pub resale: Load<models::ResaleData>,
     pub resellers_more: bool,
+    /// The watchlist target being typed in the details panel.
+    pub watch_input: String,
 }
 
 #[derive(Default)]
@@ -796,6 +836,19 @@ pub struct App {
     pub chat: ChatState,
     hub: Option<HubHandle>,
     watch: Option<crate::watch::WatchHandle>,
+    price_watch: Option<crate::watch::WatchHandle>,
+    /// The watchlist as the background check sees it.
+    watch_list: crate::pricewatch::SharedList,
+    /// Cheapest reseller last read per watched item (`None`: nobody selling).
+    pub watch_prices: HashMap<u64, Option<u64>>,
+    /// Heximons values (cached on disk, refreshed every 15 minutes).
+    pub values: crate::values::Values,
+    values_loading: bool,
+    pub values_error: Option<String>,
+    /// Price history per asset, for the trade analyzer's small charts.
+    pub history_cache: HashMap<u64, Load<models::ResaleData>>,
+    /// Daily totals of your collectibles.
+    pub value_history: Vec<crate::values::HistoryPoint>,
     notify_gate: crate::notify::SharedGate,
     /// The native window handle, for raising the window from a toast click.
     hwnd: Arc<AtomicIsize>,
@@ -857,6 +910,14 @@ impl App {
             chat: ChatState::default(),
             hub: None,
             watch: None,
+            price_watch: None,
+            watch_list: Default::default(),
+            watch_prices: HashMap::new(),
+            values: crate::values::load_cache().unwrap_or_default(),
+            values_loading: false,
+            values_error: None,
+            history_cache: HashMap::new(),
+            value_history: crate::values::load_history(),
             notify_gate: Default::default(),
             start_minimized,
             autostart: crate::autostart::state(),
@@ -1574,6 +1635,7 @@ impl App {
                 crate::watch::Kind::Trade => View::Trades,
                 crate::watch::Kind::FriendRequest => View::Friends,
                 crate::watch::Kind::Message => View::Messages,
+                crate::watch::Kind::TradeResult => View::Trades,
             };
             let quiet = gate
                 .lock()
@@ -1597,6 +1659,112 @@ impl App {
             }
         };
         self.watch = Some(crate::watch::spawn(&self.rt, self.api.clone(), report, changed));
+        self.start_price_watch();
+    }
+
+    fn start_price_watch(&mut self) {
+        if self.price_watch.is_some() {
+            return;
+        }
+        if let Ok(mut list) = self.watch_list.lock() {
+            *list = self.cfg.watchlist.clone();
+        }
+        let hwnd = self.hwnd.clone();
+        let (tx, egui) = (self.tx.clone(), self.egui.clone());
+        let (seen_tx, seen_egui) = (self.tx.clone(), self.egui.clone());
+        let alert = move |item: crate::config::WatchItem, price: u64| {
+            let title = format!("{} is at {} R$", item.name, crate::ui::money(price as i64));
+            let body = format!("Your watchlist target is {} R$.", crate::ui::money(item.target as i64));
+            let (hwnd, tx, egui) = (hwnd.clone(), tx.clone(), egui.clone());
+            crate::notify::show(title, body, move || {
+                crate::notify::bring_to_front(hwnd.load(Ordering::Relaxed));
+                if tx.send(Msg::OpenItem(item.asset_id, item.name.clone())).is_ok() {
+                    egui.request_repaint();
+                }
+            });
+        };
+        let seen = move |asset: u64, price: Option<u64>| {
+            if seen_tx.send(Msg::WatchPrice(asset, price)).is_ok() {
+                seen_egui.request_repaint();
+            }
+        };
+        self.price_watch = Some(crate::pricewatch::spawn(&self.rt, self.api.clone(), self.watch_list.clone(), alert, seen));
+    }
+
+    /// Watch an item at `target`, change its target, or (`None`) stop watching.
+    pub fn set_watch(&mut self, asset_id: u64, name: &str, target: Option<u64>) {
+        self.cfg.watchlist.retain(|item| item.asset_id != asset_id);
+        match target.filter(|target| *target > 0) {
+            Some(target) => self.cfg.watchlist.push(crate::config::WatchItem {
+                asset_id,
+                name: name.to_string(),
+                target,
+            }),
+            None => {
+                self.watch_prices.remove(&asset_id);
+            }
+        }
+        self.cfg.save();
+        if let Ok(mut list) = self.watch_list.lock() {
+            *list = self.cfg.watchlist.clone();
+        }
+    }
+
+    pub fn watched(&self, asset_id: u64) -> Option<&crate::config::WatchItem> {
+        self.cfg.watchlist.iter().find(|item| item.asset_id == asset_id)
+    }
+
+    /// Opens a limited's details on the Catalog screen.
+    pub fn open_item(&mut self, asset_id: u64, name: &str) {
+        self.view = View::Catalog;
+        self.on_view_enter();
+        self.catalog.selected = Some(models::CatalogItem {
+            id: asset_id,
+            name: name.to_string(),
+            item_type: "Asset".to_string(),
+            ..Default::default()
+        });
+        self.catalog.detail = Load::Idle;
+        self.load_catalog_detail(asset_id);
+    }
+
+    /// Refreshes Heximons values when the cached ones are old.
+    fn refresh_values(&mut self) {
+        if self.values_loading || !self.values.is_stale() {
+            return;
+        }
+        self.values_loading = true;
+        let cx = self.cx();
+        cx.spawn(async move { Msg::Values(crate::values::fetch().await) });
+    }
+
+    /// Price history of an asset for a small chart; fetched once, then cached.
+    pub fn history_of(&mut self, asset: u64) -> Load<models::ResaleData> {
+        if let Some(state) = self.history_cache.get(&asset) {
+            return state.clone();
+        }
+        self.history_cache.insert(asset, Load::Busy);
+        let cx = self.cx();
+        let api = cx.api.clone();
+        cx.spawn(async move {
+            Msg::ResaleData(asset, endpoints::resale_data(&api, asset).await.map_err(|error| error.to_string()))
+        });
+        Load::Busy
+    }
+
+    /// Today's totals of your collectibles, by RAP and by Heximons value.
+    fn record_value_history(&mut self) {
+        let Some(bundle) = self.inventory.data.ready() else { return };
+        if bundle.collectibles.is_empty() || self.values.items.is_empty() {
+            return;
+        }
+        let rap: u64 = bundle.collectibles.iter().map(|item| item.rap).sum();
+        let value: u64 = bundle
+            .collectibles
+            .iter()
+            .map(|item| self.values.value_or(item.id, item.rap))
+            .sum();
+        crate::values::record_history(&mut self.value_history, rap, value);
     }
 
     /// The Play button: fetch a join ticket and start the Hexium launcher.
@@ -1652,6 +1820,9 @@ impl App {
     }
 
     fn stop_hub(&mut self) {
+        if let Some(watch) = self.price_watch.take() {
+            watch.stop();
+        }
         if let Some(watch) = self.watch.take() {
             watch.stop();
         }
@@ -2702,6 +2873,15 @@ impl App {
             }
             Msg::CatalogDetail(result) => {
                 let limited = result.as_ref().ok().filter(|item| item.limited).map(|item| item.id);
+                // Start the watch box at the current target, else the cheapest price.
+                if let Ok(item) = &result {
+                    self.catalog.watch_input = self
+                        .watched(item.id)
+                        .map(|watched| watched.target)
+                        .or(item.resale_price.map(|price| price.max(0) as u64))
+                        .map(|price| price.to_string())
+                        .unwrap_or_default();
+                }
                 self.catalog.detail = into_load(result);
                 if let Some(asset) = limited {
                     self.load_resellers(asset, None);
@@ -2710,8 +2890,9 @@ impl App {
             }
             Msg::ResaleData(asset, result) => {
                 if self.catalog.selected.as_ref().map(|item| item.id) == Some(asset) {
-                    self.catalog.resale = into_load(result);
+                    self.catalog.resale = into_load(result.clone());
                 }
+                self.history_cache.insert(asset, into_load(result));
             }
             Msg::Resellers(asset, more, result) => {
                 let showing = self.catalog.selected.as_ref().map(|item| item.id);
@@ -2756,7 +2937,10 @@ impl App {
             Msg::Avatar(result) => self.avatar.data = into_load(result),
             Msg::Groups(result) => self.groups.data = into_load(result),
             Msg::GroupDetail(result) => self.groups.detail = into_load(result),
-            Msg::Inventory(result) => self.inventory.data = into_load(result),
+            Msg::Inventory(result) => {
+                self.inventory.data = into_load(result);
+                self.record_value_history();
+            }
             Msg::Resale(user_asset_id, result) => {
                 if let Some(resale) = self.inventory.resale.as_mut() {
                     if resale.user_asset_id == user_asset_id {
@@ -2959,6 +3143,37 @@ impl App {
                 }
             }
             Msg::ActivityChanged => self.load_session(),
+            Msg::Values(result) => {
+                self.values_loading = false;
+                match result {
+                    Ok(values) => {
+                        crate::values::save_cache(&values);
+                        self.values = values;
+                        self.values_error = None;
+                        self.record_value_history();
+                    }
+                    Err(error) => {
+                        self.values_error = Some(error);
+                        // Try again at the next refresh window, not every frame.
+                        self.values.fetched_at = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|elapsed| elapsed.as_secs())
+                            .unwrap_or(0);
+                    }
+                }
+            }
+            Msg::WatchPrice(asset, price) => {
+                if self.watched(asset).is_some() {
+                    self.watch_prices.insert(asset, price);
+                }
+            }
+            Msg::OpenItem(asset, name) => {
+                self.egui.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                self.egui.send_viewport_cmd(egui::ViewportCommand::Focus);
+                if self.session.ready().is_some() {
+                    self.open_item(asset, &name);
+                }
+            }
             Msg::GameServers(place, start, result) => {
                 let showing = match &self.games.servers {
                     Load::Ready(page) => Some(page.place_id),
@@ -3053,6 +3268,9 @@ impl eframe::App for App {
             }
         }
         self.sync_notify_gate(ctx);
+        if self.session.ready().is_some() {
+            self.refresh_values();
+        }
 
         let wanted = format!("{}/{}", self.cfg.theme, self.cfg.accent);
         if self.applied_theme != wanted {
@@ -3132,11 +3350,13 @@ mod tests {
             ],
             rap: 11_442,
             robux: None,
+            value: 0,
         };
         let get = TradeSide {
             items: vec![("Ghosdeeri".to_string(), 16_500, None)],
             rap: 16_500,
             robux: Some(250),
+            value: 0,
         };
         (give, get)
     }
@@ -3199,6 +3419,19 @@ mod tests {
         assert!(text.ends_with("Nothing moves until they accept, and they can decline or counter."));
         let counter = offer_summary("Larps", true, &give, &get);
         assert!(counter.starts_with("Send Larps this counter offer. It replaces their offer"));
+    }
+
+    #[test]
+    fn summaries_show_values_when_known() {
+        let (mut give, mut get) = sample();
+        give.value = 15_000;
+        get.value = 16_500;
+        let text = offer_summary("Larps", false, &give, &get);
+        assert!(text.contains("You give (RAP 11,442 · value 15,000)"));
+        // Equal to RAP: only RAP is shown.
+        assert!(text.contains("You get (RAP 16,500)"));
+        assert!(text.contains("By Heximons value you get 1,500 more."));
+        assert!(trade_summary("Larps", true, &give, &get).contains("By Heximons value you get 1,500 more."));
     }
 
     #[test]

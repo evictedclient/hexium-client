@@ -5,6 +5,7 @@
 //! the user picks, and a hexagon motif taken from the name. No gradients, glows
 //! or drop shadows anywhere.
 
+pub mod analyze;
 pub mod avatar;
 pub mod catalog;
 pub mod chart;

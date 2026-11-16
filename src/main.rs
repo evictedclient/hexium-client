@@ -11,9 +11,11 @@ mod icon;
 mod instance;
 mod notify;
 mod play;
+mod pricewatch;
 mod shortcut;
 mod tray;
 mod ui;
+mod values;
 mod watch;
 
 use std::sync::Arc;

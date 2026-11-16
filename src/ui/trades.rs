@@ -181,6 +181,14 @@ fn detail_body(
         return;
     }
 
+    // Price history for each item's small chart (fetched once, then cached).
+    let mut histories = std::collections::HashMap::new();
+    for asset in sides.iter().flat_map(|offer| offer.assets.iter()) {
+        if !histories.contains_key(&asset.asset_id) {
+            histories.insert(asset.asset_id, app.history_of(asset.asset_id));
+        }
+    }
+
     ui.columns(sides.len().min(2), |columns| {
         for (column, offer) in columns.iter_mut().zip(sides.iter()) {
             let mine = me == Some(offer.user_id);
@@ -220,7 +228,11 @@ fn detail_body(
                             if let Some(serial) = asset.serial {
                                 ui::pill(ui, &format!("#{serial}"), GOLD);
                             }
+                            if let Some(history) = histories.get(&asset.asset_id) {
+                                ui::analyze::sparkline(ui, history);
+                            }
                         });
+                        ui::analyze::value_line(ui, &app.values, asset.asset_id);
                     });
                 });
             }
@@ -233,6 +245,14 @@ fn detail_body(
                     .strong()
                     .color(GOLD),
             );
+            if !app.values.items.is_empty() {
+                let value = side_value(&app.values, offer);
+                column.label(
+                    RichText::new(format!("Total value {}", ui::money(value as i64)))
+                        .size(12.0)
+                        .color(GOLD),
+                );
+            }
             if let Some(robux) = offer.robux {
                 column.label(
                     RichText::new(format!("+ {} R$", ui::money(robux as i64)))
@@ -242,6 +262,25 @@ fn detail_body(
             }
         }
     });
+    // The analyzer's verdict, for you.
+    if let Some(me) = me {
+        let mine = detail.offers.iter().find(|offer| offer.user_id == me);
+        let theirs = detail.offers.iter().find(|offer| offer.user_id != me);
+        if let (Some(mine), Some(theirs)) = (mine, theirs) {
+            ui.add_space(8.0);
+            let side = |offer: &TradeOffer| ui::analyze::Side {
+                rap: offer.total_rap(),
+                value: side_value(&app.values, offer),
+                robux: offer.robux.unwrap_or(0),
+            };
+            let weak = ui::analyze::weak_demand(
+                &app.values,
+                theirs.assets.iter().map(|asset| (asset.asset_id, asset.name.as_str())),
+            );
+            ui::analyze::verdict(ui, side(mine), side(theirs), &weak);
+        }
+    }
+
     // Inbound offers that are still open can be answered here. Both buttons go
     // through the confirmation dialog, which lists both sides again.
     let inbound = app.trades_tab() == "inbound";
@@ -250,6 +289,8 @@ fn detail_body(
             let give = detail.offers.iter().find(|offer| offer.user_id == me);
             let get = detail.offers.iter().find(|offer| offer.user_id != me);
             if let (Some(give), Some(get)) = (give, get) {
+                let give_side = TradeSide { value: side_value(&app.values, give), ..TradeSide::from(give) };
+                let get_side = TradeSide { value: side_value(&app.values, get), ..TradeSide::from(get) };
                 ui.add_space(10.0);
                 ui.separator();
                 ui.horizontal(|ui| {
@@ -259,8 +300,8 @@ fn detail_body(
                             trade_id: detail.id,
                             partner: partner.clone(),
                             accept: true,
-                            give: TradeSide::from(give),
-                            get: TradeSide::from(get),
+                            give: give_side.clone(),
+                            get: get_side.clone(),
                         });
                     }
                     if ui.button("Decline…").clicked() {
@@ -268,8 +309,8 @@ fn detail_body(
                             trade_id: detail.id,
                             partner,
                             accept: false,
-                            give: TradeSide::from(give),
-                            get: TradeSide::from(get),
+                            give: give_side.clone(),
+                            get: get_side.clone(),
                         });
                     }
                     if ui.button("Counter…").clicked() {
@@ -306,4 +347,13 @@ fn status_color(status: &str) -> Color32 {
 /// `2026-11-15T18:50:33Z` → `2026-11-15 18:50`.
 fn stamp(text: &str) -> String {
     text.replace('T', " ").chars().take(16).collect()
+}
+
+/// One side's worth by Heximons value (RAP for items it does not track).
+pub fn side_value(values: &crate::values::Values, offer: &TradeOffer) -> u64 {
+    offer
+        .assets
+        .iter()
+        .map(|asset| values.value_or(asset.asset_id, asset.rap))
+        .sum()
 }

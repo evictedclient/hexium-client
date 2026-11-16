@@ -49,6 +49,17 @@ Not affiliated with hexium.wtf or Roblox.
 - **Docked panel**: item, game, group and trade details, the trade builder, the message
   composer and the Sell window open in a panel on the right instead of floating windows,
   one at a time; ✕ or Esc closes it, and each kind remembers its width.
+- **Values from [Heximons](https://heximons.lol)**: staff values, demand and trend for
+  limiteds, read from its public catalog page every 15 minutes (cached; no cookie or
+  account data is sent there). Shown in the catalog, inventory, trades and trade builder.
+- **Trade analyzer**: each item's value, demand, trend and a small price-history line;
+  a verdict for the whole trade by value and by RAP, with a warning for low-demand items.
+- **Watchlist**: watch a limited at a target price and get a notification when its cheapest
+  reseller reaches it (checked every 2 minutes). It only alerts; it never buys.
+- **Value over time**: your collectibles' total RAP and value, recorded daily and charted
+  on the Inventory screen.
+- **Trade results**: a notification when a trade you sent is accepted, declined, countered
+  or expires.
 - **Make it yours**: pick an accent colour and background in Settings.
 
 Purchases are deliberately not supported: the site's buy flow includes an anti-bot

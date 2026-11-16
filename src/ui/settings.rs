@@ -168,6 +168,7 @@ pub fn show(app: &mut App, _cx: &Ctx, ui: &mut Ui) {
             "privatemessages/v1 — inbox, sent, archive and announcements",
             "trades/v1 — inbound, outbound, completed and inactive trades, trade details",
             "chat/v2 + the /chat SignalR hub — conversations, messages, live updates",
+            "heximons.lol (a third-party values site) — item values, demand and trend, read from its public catalog page; no cookie or account data is sent there",
             "api/alerts, auth/maintenance — banners",
         ] {
             muted(ui, line);

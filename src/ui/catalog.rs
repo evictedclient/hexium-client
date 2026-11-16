@@ -10,6 +10,7 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
     h1(ui, "Catalog");
     muted(ui, "Clothing, accessories and collectibles.");
     ui.add_space(8.0);
+    watchlist(app, ui);
 
     ui.horizontal(|ui| {
         let response = ui.add(
@@ -134,6 +135,7 @@ pub fn dock(app: &mut App, cx: &Ctx, ctx: &egui::Context) {
                     if let Some(tag) = detail.limited_tag() {
                         ui::pill(ui, tag, GOLD);
                     }
+                    ui::analyze::value_line(ui, &app.values, detail.id);
                     if detail.resold {
                         ui.label(RichText::new(resale_text(&detail)).color(GOLD));
                     } else if let Some(price) = detail.price {
@@ -168,6 +170,8 @@ pub fn dock(app: &mut App, cx: &Ctx, ctx: &egui::Context) {
                         }
                     });
                     if detail.limited {
+                        ui.add_space(8.0);
+                        watch_controls(app, ui, detail.id, &detail.name);
                         ui.add_space(8.0);
                         ui::eyebrow(ui, "Price history");
                         match app.catalog.resale.clone() {
@@ -305,5 +309,101 @@ fn price_text(item: &crate::api::models::CatalogItem) -> String {
         (Some(robux), None) => format!("{} R$", ui::money(robux)),
         (None, Some(tix)) => format!("{} Tix", ui::money(tix)),
         (None, None) => "—".to_string(),
+    }
+}
+
+/// Watch this limited: alert when its cheapest reseller reaches a price.
+fn watch_controls(app: &mut App, ui: &mut Ui, asset: u64, name: &str) {
+    let watched = app.watched(asset).cloned();
+    ui::eyebrow(ui, "Watchlist");
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(if watched.is_some() { "Alert at" } else { "Alert me at" }).size(12.5));
+        app.catalog.watch_input.retain(|character| character.is_ascii_digit());
+        ui.add(
+            egui::TextEdit::singleline(&mut app.catalog.watch_input)
+                .hint_text("price")
+                .char_limit(9)
+                .desired_width(80.0),
+        );
+        ui.label(RichText::new("R$ or less").size(12.0).color(GOLD));
+        let target: Option<u64> = app.catalog.watch_input.parse().ok().filter(|target| *target > 0);
+        match &watched {
+            Some(current) => {
+                let changed = target.is_some_and(|target| target != current.target);
+                if ui.add_enabled(changed, egui::Button::new("Save")).clicked() {
+                    app.set_watch(asset, name, target);
+                }
+                if ui.button("Stop watching").clicked() {
+                    app.set_watch(asset, name, None);
+                }
+            }
+            None => {
+                if ui.add_enabled(target.is_some(), egui::Button::new("☆ Watch")).clicked() {
+                    app.set_watch(asset, name, target);
+                }
+            }
+        }
+    });
+    if watched.is_some() {
+        let line = match app.watch_prices.get(&asset) {
+            Some(Some(price)) => format!("Cheapest now {} R$ · checked every 2 minutes", ui::money(*price as i64)),
+            Some(None) => "Nobody is selling one · checked every 2 minutes".to_string(),
+            None => "Checking soon…".to_string(),
+        };
+        muted(ui, &line);
+    }
+}
+
+/// Watched limiteds, at the top of the Catalog screen.
+fn watchlist(app: &mut App, ui: &mut Ui) {
+    if app.cfg.watchlist.is_empty() {
+        return;
+    }
+    let mut open: Option<(u64, String)> = None;
+    let mut remove: Option<(u64, String)> = None;
+    ui::card_frame().show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal(|ui| {
+            ui::eyebrow(ui, "Watchlist");
+            muted(ui, "You get a notification when the cheapest copy reaches your price.");
+        });
+        ui.add_space(2.0);
+        for item in app.cfg.watchlist.clone() {
+            ui.horizontal(|ui| {
+                if ui.link(RichText::new(&item.name).size(12.5)).clicked() {
+                    open = Some((item.asset_id, item.name.clone()));
+                }
+                ui.label(
+                    RichText::new(format!("at {} R$", ui::money(item.target as i64)))
+                        .size(11.5)
+                        .color(GOLD),
+                );
+                let (now, hit) = match app.watch_prices.get(&item.asset_id) {
+                    Some(Some(price)) => (format!("now {} R$", ui::money(*price as i64)), *price <= item.target),
+                    Some(None) => ("nobody selling".to_string(), false),
+                    None => ("checking…".to_string(), false),
+                };
+                ui.label(RichText::new(now).size(11.5).color(if hit { GREEN } else { MUTED }));
+                if hit {
+                    ui::pill(ui, "AT TARGET", GREEN);
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add(egui::Button::new(RichText::new("✕").size(12.0).color(MUTED)).frame(false))
+                        .on_hover_text("Stop watching")
+                        .clicked()
+                    {
+                        remove = Some((item.asset_id, item.name.clone()));
+                    }
+                });
+            });
+        }
+    });
+    ui.add_space(8.0);
+    if let Some((asset, name)) = open {
+        app.open_item(asset, &name);
+    }
+    if let Some((asset, name)) = remove {
+        app.set_watch(asset, &name, None);
     }
 }

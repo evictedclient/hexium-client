@@ -198,3 +198,68 @@ mod tests {
         assert_eq!(short_date(day_number("2024-02-29").unwrap()), "Feb 29");
     }
 }
+
+/// Your collectibles' total per day: value (gold) and RAP (accent).
+pub fn history(ui: &mut Ui, points: &[crate::values::HistoryPoint]) {
+    if points.is_empty() {
+        return;
+    }
+    let width = ui.available_width().max(260.0);
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 140.0), Sense::hover());
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, egui::Rounding::same(8.0), ui::card());
+    painter.rect_stroke(rect, egui::Rounding::same(8.0), Stroke::new(1.0, ui::line()));
+    let plot = Rect::from_min_max(
+        Pos2::new(rect.left() + 52.0, rect.top() + 12.0),
+        Pos2::new(rect.right() - 12.0, rect.bottom() - 22.0),
+    );
+    let first = points[0].day;
+    let last = points[points.len() - 1].day;
+    let span = (last - first).max(1) as f32;
+    let x_of = |day: i64| {
+        if first == last {
+            plot.center().x
+        } else {
+            plot.left() + (day - first) as f32 / span * plot.width()
+        }
+    };
+    let top = points.iter().map(|point| point.value.max(point.rap)).max().unwrap_or(1).max(1) as f32 * 1.1;
+    let y_of = |amount: u64| plot.bottom() - amount as f32 / top * plot.height();
+    let small = FontId::proportional(10.0);
+    for fraction in [1.0_f32, 0.5] {
+        let amount = (top / 1.1 * fraction) as u64;
+        let y = y_of(amount);
+        painter.line_segment([Pos2::new(plot.left(), y), Pos2::new(plot.right(), y)], Stroke::new(1.0, ui::line()));
+        painter.text(Pos2::new(plot.left() - 6.0, y), Align2::RIGHT_CENTER, ui::compact(amount), small.clone(), MUTED);
+    }
+    for (pick, color) in [(0usize, GOLD), (1usize, accent())] {
+        let line: Vec<Pos2> = points
+            .iter()
+            .map(|point| Pos2::new(x_of(point.day), y_of(if pick == 0 { point.value } else { point.rap })))
+            .collect();
+        if line.len() > 1 {
+            painter.add(egui::Shape::line(line.clone(), Stroke::new(2.0, color)));
+        }
+        for dot in &line {
+            painter.circle_filled(*dot, 3.0, color);
+        }
+    }
+    painter.text(Pos2::new(plot.left(), rect.bottom() - 6.0), Align2::LEFT_BOTTOM, short_date(first), small.clone(), MUTED);
+    if last != first {
+        painter.text(Pos2::new(plot.right(), rect.bottom() - 6.0), Align2::RIGHT_BOTTOM, short_date(last), small, MUTED);
+    }
+    if let Some(pointer) = response.hover_pos() {
+        let nearest = points
+            .iter()
+            .min_by(|a, b| (x_of(a.day) - pointer.x).abs().total_cmp(&(x_of(b.day) - pointer.x).abs()))
+            .copied();
+        if let Some(point) = nearest {
+            response.on_hover_text(format!(
+                "{}\nValue {}\nRAP {}",
+                short_date(point.day),
+                ui::money(point.value as i64),
+                ui::money(point.rap as i64)
+            ));
+        }
+    }
+}
