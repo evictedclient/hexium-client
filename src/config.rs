@@ -28,6 +28,9 @@ pub struct Config {
     /// Windows notifications for chat messages you are not looking at.
     #[serde(default = "default_true")]
     pub chat_notifications: bool,
+    /// Closing the window hides it to the tray instead of quitting.
+    #[serde(default = "default_true")]
+    pub close_to_tray: bool,
     /// The exe the Start-menu shortcut was last written for.
     #[serde(default)]
     pub shortcut_exe: Option<String>,
@@ -68,6 +71,7 @@ impl Default for Config {
             window_height: default_height(),
             share_typing: true,
             chat_notifications: true,
+            close_to_tray: true,
             shortcut_exe: None,
         }
     }

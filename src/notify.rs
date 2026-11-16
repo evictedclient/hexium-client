@@ -21,6 +21,8 @@ pub struct Gate {
     pub focused: bool,
     /// The conversation open on the Chat screen, when that screen is showing.
     pub watching: Option<u64>,
+    /// Conversations with unread messages, for the tray tooltip.
+    pub unread: std::collections::HashSet<u64>,
     /// User id -> name, from the conversation list.
     pub names: HashMap<u64, String>,
     /// Conversation id -> name shown for it, for group conversations.
@@ -45,6 +47,22 @@ pub fn learn(gate: &mut Gate, bundle: &crate::api::models::ChatBundle, me: u64) 
     for friend in &bundle.friends {
         gate.names.entry(friend.id).or_insert_with(|| friend.name.clone());
     }
+    gate.unread = bundle
+        .conversations
+        .iter()
+        .filter(|conversation| conversation.unread)
+        .map(|conversation| conversation.id)
+        .collect();
+}
+
+/// A message arrived over the hub: unless you are looking at that conversation,
+/// it is unread now. Returns how many conversations are unread.
+pub fn mark_unread(gate: &mut Gate, conversation: u64, sender: u64) -> u64 {
+    let looking = gate.focused && gate.watching == Some(conversation);
+    if sender != 0 && sender != gate.me && !looking {
+        gate.unread.insert(conversation);
+    }
+    gate.unread.len() as u64
 }
 
 /// What a toast would say, or `None` when no toast should show.

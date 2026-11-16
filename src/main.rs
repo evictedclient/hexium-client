@@ -9,6 +9,7 @@ mod icon;
 mod instance;
 mod notify;
 mod shortcut;
+mod tray;
 mod ui;
 
 use std::sync::Arc;

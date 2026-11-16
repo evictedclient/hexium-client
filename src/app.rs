@@ -759,6 +759,10 @@ pub struct App {
     start_minimized: bool,
     /// The "Open at sign-in" entry, as Windows has it.
     pub autostart: crate::autostart::State,
+    /// The notification-area icon, when Windows gave us one.
+    tray: Option<Arc<crate::tray::Tray>>,
+    /// Set by the tray's Quit, so the close is not turned into a hide.
+    quitting: Arc<std::sync::atomic::AtomicBool>,
     refreshed_at: Instant,
     last_resize_check: Instant,
 }
@@ -811,6 +815,8 @@ impl App {
             notify_gate: Default::default(),
             start_minimized,
             autostart: crate::autostart::state(),
+            tray: None,
+            quitting: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             hwnd: Arc::new(AtomicIsize::new(0)),
             refreshed_at: Instant::now(),
             last_resize_check: Instant::now(),
@@ -818,6 +824,7 @@ impl App {
         if let Ok(mut gate) = app.notify_gate.lock() {
             gate.enabled = app.cfg.chat_notifications;
         }
+        app.start_tray();
         if app.api.has_session() {
             app.load_session();
             app.load_banners();
@@ -1367,6 +1374,7 @@ impl App {
         let click_egui = self.egui.clone();
         let rt = self.rt.clone();
         let api = self.api.clone();
+        let tray = self.tray.clone();
         self.prime_notify_gate();
         self.hub = Some(hub::spawn(&self.rt, self.api.clone(), move |event| {
             // Decided here rather than in the UI loop, which may be asleep while
@@ -1374,6 +1382,7 @@ impl App {
             if let HubEvent::Message { conversation_id, user_id, content, .. } = &event {
                 let (conversation, sender, content) = (*conversation_id, *user_id, content.clone());
                 let (gate, api) = (gate.clone(), api.clone());
+                let tray = tray.clone();
                 let (hwnd, tx, egui) = (hwnd.clone(), click_tx.clone(), click_egui.clone());
                 rt.spawn(async move {
                     // Someone the list has not named yet: look them up first.
@@ -1385,9 +1394,16 @@ impl App {
                             }
                         }
                     }
-                    let toast = gate.lock().ok().and_then(|mut gate| {
-                        crate::notify::decide(&mut gate, conversation, sender, &content, Instant::now())
-                    });
+                    let (toast, unread) = match gate.lock() {
+                        Ok(mut gate) => (
+                            crate::notify::decide(&mut gate, conversation, sender, &content, Instant::now()),
+                            Some(crate::notify::mark_unread(&mut gate, conversation, sender)),
+                        ),
+                        Err(_) => (None, None),
+                    };
+                    if let (Some(tray), Some(unread)) = (&tray, unread) {
+                        tray.set_unread(unread);
+                    }
                     if let Some((title, body)) = toast {
                         crate::notify::show(title, body, move || {
                             crate::notify::bring_to_front(hwnd.load(Ordering::Relaxed));
@@ -1402,6 +1418,32 @@ impl App {
                 egui.request_repaint();
             }
         }));
+    }
+
+    /// The tray icon. Its actions run on the tray's own thread, so they work
+    /// while the window is hidden and not drawing.
+    fn start_tray(&mut self) {
+        let hwnd = self.hwnd.clone();
+        let egui = self.egui.clone();
+        let quitting = self.quitting.clone();
+        let tray = crate::tray::Tray::spawn(crate::shortcut::write_icon(), move |action| match action {
+            crate::tray::Action::Open => {
+                crate::notify::bring_to_front(hwnd.load(Ordering::Relaxed));
+                egui.request_repaint();
+            }
+            crate::tray::Action::Quit => {
+                quitting.store(true, Ordering::Relaxed);
+                crate::tray::remove_icon();
+                egui.send_viewport_cmd(egui::ViewportCommand::Close);
+                egui.request_repaint();
+                // A hidden window may never draw the frame that closes it.
+                std::thread::spawn(|| {
+                    std::thread::sleep(Duration::from_millis(1500));
+                    std::process::exit(0);
+                });
+            }
+        });
+        self.tray = tray.map(Arc::new);
     }
 
     /// Fills in who you are and everyone's names for notifications, without
@@ -1624,6 +1666,36 @@ impl App {
             }
             gate.focused = focused && !minimized;
             gate.watching = watching;
+            // While the UI runs, the chat list is the truth.
+            if let Some(bundle) = self.chat.list.ready() {
+                gate.unread = bundle
+                    .conversations
+                    .iter()
+                    .filter(|conversation| conversation.unread)
+                    .map(|conversation| conversation.id)
+                    .collect();
+            }
+            if let Some(tray) = &self.tray {
+                tray.set_unread(gate.unread.len() as u64);
+            }
+        }
+    }
+
+    /// Closing the window: hide it to the tray, unless that is switched off,
+    /// there is no tray, or Quit was chosen.
+    fn handle_close(&mut self, ctx: &egui::Context) {
+        if !ctx.input(|input| input.viewport().close_requested()) {
+            return;
+        }
+        let quitting = self.quitting.load(Ordering::Relaxed);
+        if self.cfg.close_to_tray && self.tray.is_some() && !quitting {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            crate::tray::hide_window(self.hwnd.load(Ordering::Relaxed));
+            if let Ok(mut gate) = self.notify_gate.lock() {
+                gate.focused = false;
+            }
+        } else {
+            crate::tray::remove_icon();
         }
     }
 
@@ -2658,6 +2730,13 @@ fn into_load<T>(result: Res<T>) -> Load<T> {
     }
 }
 
+impl Drop for App {
+    fn drop(&mut self) {
+        // No icon left behind in the notification area.
+        crate::tray::remove_icon();
+    }
+}
+
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         self.egui = ctx.clone();
@@ -2674,6 +2753,7 @@ impl eframe::App for App {
             self.apply(message);
         }
 
+        self.handle_close(ctx);
         if self.start_minimized {
             self.start_minimized = false;
             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));

@@ -122,6 +122,14 @@ pub fn show(app: &mut App, _cx: &Ctx, ui: &mut Ui) {
         }
         muted(ui, "Shown when a message arrives while the client is in the background or you are on another screen or chat. Needs the live connection.");
         ui.add_space(6.0);
+        if ui
+            .checkbox(&mut app.cfg.close_to_tray, "Close to tray")
+            .changed()
+        {
+            app.cfg.save();
+        }
+        muted(ui, "Closing the window keeps the client running in the notification area, so chat keeps arriving. Quit from the tray icon's menu.");
+        ui.add_space(6.0);
         let mut at_sign_in = app.autostart != crate::autostart::State::Off;
         if ui.checkbox(&mut at_sign_in, "Open at sign-in").changed() {
             app.set_autostart(at_sign_in);

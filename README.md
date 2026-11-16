@@ -28,6 +28,9 @@ Not affiliated with hexium.wtf or Roblox.
 - **Open at sign-in** (Settings > Chat): starts the client minimised when you log into
   Windows (a per-user `Run` entry with `--minimized`), so chat notifications arrive
   without opening it by hand.
+- **Tray icon**: closing the window keeps the client running in the notification area
+  (switchable in Settings > Chat). Click the icon to open it; its menu has Open and
+  Quit, and its tooltip shows how many chats are unread.
 - **Writes**, each behind a confirmation dialog that says exactly what will change:
   follow / unfollow, favourite / unfavourite, set your status and description, vote on games, mark messages read or
   unread (or all at once), archive / unarchive messages, send / accept / decline friend requests, unfriend, send private messages
