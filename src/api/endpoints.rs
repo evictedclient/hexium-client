@@ -986,3 +986,13 @@ pub async fn avatar_palette(client: &ApiClient) -> Result<HashMap<u64, PaletteCo
     }
     Ok(palette)
 }
+
+/// `api-trades.js` `acceptTrade` / `declineTrade`: a bare POST. Accepting moves the
+/// items at once; neither can be undone.
+pub async fn answer_trade(client: &ApiClient, id: u64, accept: bool) -> Result<()> {
+    let action = if accept { "accept" } else { "decline" };
+    client
+        .post(&api("trades", &format!("/v1/trades/{id}/{action}")), None)
+        .await?;
+    Ok(())
+}

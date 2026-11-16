@@ -2,14 +2,14 @@ use eframe::egui::{self, Color32, RichText, Ui};
 
 use crate::api::endpoints::TRADE_TABS;
 use crate::api::models::{TradeDetail, TradeOffer};
-use crate::app::{App, Load};
+use crate::app::{App, Load, TradeSide, WriteAction};
 use crate::ui::{self, failed, h1, muted, waiting, Ctx, accent, DANGER, GOLD, GREEN, MUTED};
 
 pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
     app.load_trades();
 
     h1(ui, "Trades");
-    muted(ui, "Offers you have sent and received. Answering trades happens on hexium.wtf for now.");
+    muted(ui, "Offers you have sent and received. Open an inbound offer to accept or decline it.");
     ui.add_space(8.0);
 
     let current = app.trades_tab();
@@ -240,6 +240,42 @@ fn detail_body(
             }
         }
     });
+    // Inbound offers that are still open can be answered here. Both buttons go
+    // through the confirmation dialog, which lists both sides again.
+    let inbound = app.trades_tab() == "inbound";
+    if inbound && detail.is_active {
+        if let Some(me) = me {
+            let give = detail.offers.iter().find(|offer| offer.user_id == me);
+            let get = detail.offers.iter().find(|offer| offer.user_id != me);
+            if let (Some(give), Some(get)) = (give, get) {
+                ui.add_space(10.0);
+                ui.separator();
+                ui.horizontal(|ui| {
+                    let partner = get.user_name.clone();
+                    if ui::primary_button(ui, "Accept…").clicked() {
+                        app.ask(WriteAction::AnswerTrade {
+                            trade_id: detail.id,
+                            partner: partner.clone(),
+                            accept: true,
+                            give: TradeSide::from(give),
+                            get: TradeSide::from(get),
+                        });
+                    }
+                    if ui.button("Decline…").clicked() {
+                        app.ask(WriteAction::AnswerTrade {
+                            trade_id: detail.id,
+                            partner,
+                            accept: false,
+                            give: TradeSide::from(give),
+                            get: TradeSide::from(get),
+                        });
+                    }
+                    muted(ui, "You confirm on the next step.");
+                });
+            }
+        }
+    }
+
 }
 
 fn status_color(status: &str) -> Color32 {

@@ -135,6 +135,13 @@ pub enum WriteAction {
     AcceptFriend { user_id: u64, name: String },
     DeclineFriend { user_id: u64, name: String },
     Unfriend { user_id: u64, name: String },
+    AnswerTrade {
+        trade_id: u64,
+        partner: String,
+        accept: bool,
+        give: TradeSide,
+        get: TradeSide,
+    },
     SendMessage {
         recipient_id: u64,
         recipient: String,
@@ -159,6 +166,8 @@ impl WriteAction {
             WriteAction::AcceptFriend { .. } => "Accept friend request".to_string(),
             WriteAction::DeclineFriend { .. } => "Decline friend request".to_string(),
             WriteAction::Unfriend { .. } => "Unfriend".to_string(),
+            WriteAction::AnswerTrade { accept: true, .. } => "Accept trade".to_string(),
+            WriteAction::AnswerTrade { accept: false, .. } => "Decline trade".to_string(),
             WriteAction::SendMessage { reply_to: Some(_), .. } => "Send reply".to_string(),
             WriteAction::SendMessage { .. } => "Send message".to_string(),
         }
@@ -202,6 +211,9 @@ impl WriteAction {
             WriteAction::Unfriend { name, .. } => format!(
                 "{name} will be removed from your friends. Undoing this takes a new request that they have to accept."
             ),
+            WriteAction::AnswerTrade { partner, accept, give, get, .. } => {
+                trade_summary(partner, *accept, give, get)
+            }
             WriteAction::SendMessage { recipient, subject, body, reply_to, include_previous, .. } => {
                 let preview: String = body.chars().take(160).collect();
                 let more = if body.chars().count() > 160 { "…" } else { "" };
@@ -230,9 +242,76 @@ impl WriteAction {
             WriteAction::AcceptFriend { .. } => "Accept",
             WriteAction::DeclineFriend { .. } => "Decline",
             WriteAction::Unfriend { .. } => "Unfriend",
+            WriteAction::AnswerTrade { accept: true, .. } => "Accept trade",
+            WriteAction::AnswerTrade { accept: false, .. } => "Decline trade",
             WriteAction::SendMessage { .. } => "Send",
         }
     }
+}
+
+/// One side of a trade, as the confirmation dialog shows it.
+#[derive(Debug, Clone, Default)]
+pub struct TradeSide {
+    /// (name, RAP, serial)
+    pub items: Vec<(String, u64, Option<u64>)>,
+    pub rap: u64,
+    pub robux: Option<u64>,
+}
+
+impl From<&models::TradeOffer> for TradeSide {
+    fn from(offer: &models::TradeOffer) -> Self {
+        Self {
+            items: offer
+                .assets
+                .iter()
+                .map(|asset| (asset.name.clone(), asset.rap, asset.serial))
+                .collect(),
+            rap: offer.total_rap(),
+            robux: offer.robux,
+        }
+    }
+}
+
+/// Everything the user should see before answering a trade: both sides item by
+/// item, their RAP totals, and which way the difference goes.
+fn trade_summary(partner: &str, accept: bool, give: &TradeSide, get: &TradeSide) -> String {
+    fn side(out: &mut String, heading: &str, side: &TradeSide) {
+        out.push_str(&format!("{heading} (RAP {})\n", group_digits(side.rap)));
+        if side.items.is_empty() {
+            out.push_str("   no items\n");
+        }
+        for (name, rap, serial) in &side.items {
+            let serial = serial.map(|serial| format!("  #{serial}")).unwrap_or_default();
+            out.push_str(&format!("   · {name}  (RAP {}){serial}\n", group_digits(*rap)));
+        }
+        if let Some(robux) = side.robux {
+            out.push_str(&format!("   · plus {} R$\n", group_digits(robux)));
+        }
+    }
+
+    let mut out = if accept {
+        format!("Accept {partner}'s trade. The items move straight away and it cannot be undone.\n\n")
+    } else {
+        format!("Decline {partner}'s trade. It cannot be reopened; they would have to send a new one.\n\n")
+    };
+    side(&mut out, if accept { "You give" } else { "You would have given" }, give);
+    out.push('\n');
+    side(&mut out, if accept { "You get" } else { "You would have got" }, get);
+    out.push('\n');
+    out.push_str(&match get.rap.cmp(&give.rap) {
+        std::cmp::Ordering::Greater => {
+            format!("You get {} RAP more than you give.", group_digits(get.rap - give.rap))
+        }
+        std::cmp::Ordering::Less => {
+            format!("You give {} RAP more than you get.", group_digits(give.rap - get.rap))
+        }
+        std::cmp::Ordering::Equal => "Both sides are worth the same RAP.".to_string(),
+    });
+    out
+}
+
+fn group_digits(value: u64) -> String {
+    crate::ui::money(value as i64)
 }
 
 /// The message being written. It only becomes a write once the user presses
@@ -1018,6 +1097,9 @@ impl App {
                 WriteAction::Unfriend { user_id, .. } => {
                     endpoints::friendship_write(&api, *user_id, "unfriend").await
                 }
+                WriteAction::AnswerTrade { trade_id, accept, .. } => {
+                    endpoints::answer_trade(&api, *trade_id, *accept).await
+                }
                 WriteAction::SendMessage { recipient_id, subject, body, reply_to, include_previous, .. } => {
                     endpoints::send_message(&api, *recipient_id, subject, body, *reply_to, *include_previous).await
                 }
@@ -1125,6 +1207,23 @@ impl App {
                 self.set_friendship(*user_id, "NotFriends");
                 self.friends.data = Load::Idle;
                 format!("{name} is no longer your friend.")
+            }
+            WriteAction::AnswerTrade { trade_id, partner, accept, .. } => {
+                // It is no longer open, so it leaves the list and the window closes.
+                if let Load::Ready(page) = &mut self.trades.data {
+                    page.items.retain(|trade| trade.id != *trade_id);
+                }
+                self.trades.selected = None;
+                self.trades.detail = Load::Idle;
+                // The inbound count on Home and in the menu badge.
+                self.load_session();
+                if *accept {
+                    // Items changed hands.
+                    self.inventory.data = Load::Idle;
+                    format!("Trade with {partner} accepted. The items have moved.")
+                } else {
+                    format!("Declined {partner}'s trade.")
+                }
             }
             WriteAction::SendMessage { recipient, .. } => {
                 self.compose = None;
@@ -1557,5 +1656,50 @@ impl eframe::App for App {
         } else {
             crate::ui::chrome(self, &cx, ctx);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample() -> (TradeSide, TradeSide) {
+        let give = TradeSide {
+            items: vec![
+                ("The Classic HEXIUM Fedora".to_string(), 8_544, None),
+                ("Clockwork's Headphones".to_string(), 2_898, Some(12)),
+            ],
+            rap: 11_442,
+            robux: None,
+        };
+        let get = TradeSide {
+            items: vec![("Ghosdeeri".to_string(), 16_500, None)],
+            rap: 16_500,
+            robux: Some(250),
+        };
+        (give, get)
+    }
+
+    #[test]
+    fn accept_summary_lists_both_sides_and_totals() {
+        let (give, get) = sample();
+        let text = trade_summary("trollbait", true, &give, &get);
+        println!("{text}");
+        assert!(text.starts_with("Accept trollbait's trade."));
+        assert!(text.contains("You give (RAP 11,442)"));
+        assert!(text.contains("· The Classic HEXIUM Fedora  (RAP 8,544)"));
+        assert!(text.contains("· Clockwork's Headphones  (RAP 2,898)  #12"));
+        assert!(text.contains("You get (RAP 16,500)"));
+        assert!(text.contains("· plus 250 R$"));
+        assert!(text.ends_with("You get 5,058 RAP more than you give."));
+    }
+
+    #[test]
+    fn decline_summary_uses_would_have() {
+        let (give, get) = sample();
+        let text = trade_summary("trollbait", false, &give, &get);
+        assert!(text.starts_with("Decline trollbait's trade."));
+        assert!(text.contains("You would have given (RAP 11,442)"));
+        assert!(text.contains("You would have got (RAP 16,500)"));
     }
 }

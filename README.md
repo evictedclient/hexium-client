@@ -17,7 +17,8 @@ Not affiliated with hexium.wtf or Roblox.
 - **Writes**, each behind a confirmation dialog that says exactly what will change:
   follow / unfollow, favourite / unfavourite, set your status, mark messages read or
   unread, send / accept / decline friend requests, unfriend, send private messages
-  and replies.
+  and replies, accept / decline inbound trades (the dialog lists both sides and
+  their RAP totals).
 - **Make it yours**: pick an accent colour and background in Settings.
 
 Purchases are deliberately not supported: the site's buy flow includes an anti-bot
