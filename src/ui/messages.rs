@@ -203,13 +203,7 @@ pub fn compose_window(app: &mut App, ctx: &egui::Context) {
     let mut open = true;
     let mut send: Option<WriteAction> = None;
     let mut problem: Option<&'static str> = None;
-    egui::Window::new(title)
-        .id(egui::Id::new("compose-window"))
-        .open(&mut open)
-        .collapsible(false)
-        .resizable(true)
-        .default_width(460.0)
-        .show(ctx, |ui| {
+    ui::dock(ctx, "compose", 460.0, egui::Id::new("compose-window"), title, &mut open, |ui| {
             ui.label(RichText::new("Subject").size(11.0).color(MUTED));
             ui.add(
                 egui::TextEdit::singleline(&mut draft.subject)

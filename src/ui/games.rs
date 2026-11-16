@@ -98,7 +98,10 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
         }
         _ => waiting(ui, "games"),
     }
+}
 
+/// The selected game, in the docked panel.
+pub fn dock(app: &mut App, cx: &Ctx, ctx: &egui::Context) {
     let selected = app.games.selected.and_then(|index| {
         app.games.games.ready().and_then(|bundle| {
             bundle.games.get(index).map(|game| {
@@ -117,13 +120,7 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
     if let Some((game, icon)) = selected {
         let mut open = true;
         let mut ask_vote: Option<WriteAction> = None;
-        egui::Window::new(format!("Game · {}", game.name))
-            .id(egui::Id::new(("game", game.id)))
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(false)
-            .default_width(470.0)
-            .show(ui.ctx(), |ui| {
+        ui::dock(ctx, "game", 480.0, egui::Id::new(("game", game.id)), format!("Game · {}", game.name), &mut open, |ui| {
                 ui.horizontal_top(|ui| {
                     app.thumbs.show(ui, cx, icon.as_deref(), egui::vec2(128.0, 128.0));
                     ui.vertical(|ui| {

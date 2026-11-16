@@ -112,13 +112,7 @@ pub fn resale_window(app: &mut App, cx: &Ctx, ctx: &egui::Context) {
 
     let mut open = true;
     let mut ask: Option<WriteAction> = None;
-    egui::Window::new(format!("Sell · {name}"))
-        .id(egui::Id::new(("resale", user_asset_id)))
-        .open(&mut open)
-        .collapsible(false)
-        .resizable(false)
-        .default_width(440.0)
-        .show(ctx, |ui| {
+    ui::dock(ctx, "sell", 460.0, egui::Id::new(("resale", user_asset_id)), format!("Sell · {name}"), &mut open, |ui| {
             ui.horizontal_top(|ui| {
                 app.thumbs.show(ui, cx, icon.as_deref(), egui::vec2(96.0, 96.0));
                 ui.vertical(|ui| {

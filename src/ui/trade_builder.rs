@@ -12,6 +12,8 @@ pub fn window(app: &mut App, cx: &Ctx, ctx: &egui::Context) {
     let Some(builder) = app.trade_builder.as_ref() else {
         return;
     };
+    // Your Robux, so the builder can refuse more than you have.
+    let balance = app.session.ready().map(|session| session.currency.robux.max(0) as u64);
     let title = match builder.counter_of {
         Some(_) => format!("Counter {}'s trade", builder.partner),
         None => format!("Trade with {}", builder.partner),
@@ -19,13 +21,7 @@ pub fn window(app: &mut App, cx: &Ctx, ctx: &egui::Context) {
 
     let mut open = true;
     let mut ask: Option<WriteAction> = None;
-    egui::Window::new(RichText::new(title).font(ui::display(19.0)))
-        .id(egui::Id::new("trade-builder"))
-        .open(&mut open)
-        .collapsible(false)
-        .resizable(true)
-        .default_size(egui::vec2(780.0, 560.0))
-        .show(ctx, |ui| {
+    ui::dock(ctx, "builder", 760.0, egui::Id::new("trade-builder"), title, &mut open, |ui| {
             let Some(builder) = app.trade_builder.as_mut() else { return };
             muted(
                 ui,
@@ -79,9 +75,51 @@ pub fn window(app: &mut App, cx: &Ctx, ctx: &egui::Context) {
             toggle(&mut builder.give, toggle_mine);
             toggle(&mut builder.get, toggle_theirs);
 
+            // Robux on either side (digits only).
+            ui.add_space(6.0);
+            builder.give_robux.retain(|character| character.is_ascii_digit());
+            builder.get_robux.retain(|character| character.is_ascii_digit());
+            let give_robux: u64 = builder.give_robux.parse().unwrap_or(0);
+            let get_robux: u64 = builder.get_robux.parse().unwrap_or(0);
+            let over_balance = balance.is_some_and(|balance| give_robux > balance);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Add Robux").font(ui::semibold(12.5)));
+                ui.add_space(6.0);
+                ui.label(RichText::new("you give").size(12.0).color(MUTED));
+                ui.add(
+                    egui::TextEdit::singleline(&mut builder.give_robux)
+                        .hint_text("0")
+                        .char_limit(9)
+                        .desired_width(80.0)
+                        .text_color(if over_balance { ui::DANGER } else { GOLD }),
+                );
+                if let Some(balance) = balance {
+                    ui.label(
+                        RichText::new(format!("of {} R$", ui::money(balance as i64)))
+                            .size(11.5)
+                            .color(if over_balance { ui::DANGER } else { MUTED }),
+                    );
+                }
+                ui.add_space(18.0);
+                ui.label(RichText::new(format!("{partner} gives")).size(12.0).color(MUTED));
+                ui.add(
+                    egui::TextEdit::singleline(&mut builder.get_robux)
+                        .hint_text("0")
+                        .char_limit(9)
+                        .desired_width(80.0)
+                        .text_color(GOLD),
+                );
+                ui.label(RichText::new("R$").size(11.5).color(GOLD));
+            });
+            if over_balance {
+                ui.label(RichText::new("That is more Robux than you have.").size(11.5).color(ui::DANGER));
+            }
+
             // Totals and the send button.
-            let give_side = side_of(&builder.mine, &builder.give);
-            let get_side = side_of(&builder.theirs, &builder.get);
+            let mut give_side = side_of(&builder.mine, &builder.give);
+            let mut get_side = side_of(&builder.theirs, &builder.get);
+            give_side.robux = (give_robux > 0).then_some(give_robux);
+            get_side.robux = (get_robux > 0).then_some(get_robux);
             ui.add_space(8.0);
             ui.separator();
             ui.horizontal(|ui| {
@@ -99,7 +137,7 @@ pub fn window(app: &mut App, cx: &Ctx, ctx: &egui::Context) {
             });
             ui.add_space(6.0);
             ui.horizontal(|ui| {
-                let ready = !builder.give.is_empty() && !builder.get.is_empty();
+                let ready = !builder.give.is_empty() && !builder.get.is_empty() && !over_balance;
                 let label = if builder.counter_of.is_some() { "Send counter…" } else { "Send trade…" };
                 let button = egui::Button::new(
                     RichText::new(label).font(ui::semibold(13.5)).color(egui::Color32::from_rgb(18, 18, 20)),
@@ -112,6 +150,8 @@ pub fn window(app: &mut App, cx: &Ctx, ctx: &egui::Context) {
                         counter_of: builder.counter_of,
                         give_ids: builder.give.clone(),
                         get_ids: builder.get.clone(),
+                        give_robux,
+                        get_robux,
                         give: give_side.clone(),
                         get: get_side.clone(),
                     });
@@ -120,7 +160,9 @@ pub fn window(app: &mut App, cx: &Ctx, ctx: &egui::Context) {
                     builder.give.clear();
                     builder.get.clear();
                 }
-                if !ready {
+                if over_balance {
+                    muted(ui, "Lower your Robux to send.");
+                } else if !ready {
                     muted(ui, "Pick at least one item on each side.");
                 } else {
                     muted(ui, "You confirm on the next step.");
@@ -304,5 +346,12 @@ fn total(ui: &mut Ui, label: &str, side: &TradeSide, count: usize) {
             );
             muted(ui, &format!("{count} item(s)"));
         });
+        if let Some(robux) = side.robux {
+            ui.label(
+                RichText::new(format!("+ {} R$", ui::money(robux as i64)))
+                    .font(ui::semibold(13.0))
+                    .color(GOLD),
+            );
+        }
     });
 }

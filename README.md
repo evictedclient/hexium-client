@@ -43,9 +43,12 @@ Not affiliated with hexium.wtf or Roblox.
   follow / unfollow, favourite / unfavourite, set your status and description, vote on games, mark messages read or
   unread (or all at once), archive / unarchive messages, send / accept / decline friend requests, unfriend, send private messages
   and replies, send chat messages (starting the conversation if there is none yet), accept / decline / counter inbound trades and send new ones from a
-  trade builder (the dialog lists both sides and their RAP totals), list a collectible for sale, change its price or take it off
+  trade builder (the dialog lists both sides and their RAP totals, with optional Robux on either side), list a collectible for sale, change its price or take it off
   sale (with its RAP and the cheapest other listing, plus its price history chart with your
   price drawn across it).
+- **Docked panel**: item, game, group and trade details, the trade builder, the message
+  composer and the Sell window open in a panel on the right instead of floating windows,
+  one at a time; ✕ or Esc closes it, and each kind remembers its width.
 - **Make it yours**: pick an accent colour and background in Settings.
 
 Purchases are deliberately not supported: the site's buy flow includes an anti-bot

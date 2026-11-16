@@ -102,14 +102,21 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
         app.open_trade(id);
     }
 
-    detail_window(app, cx, ui, &mut open_profile);
-
     if let Some(id) = open_profile {
         app.open_profile(id);
     }
 }
 
-fn detail_window(app: &mut App, cx: &Ctx, ui: &mut Ui, open_profile: &mut Option<u64>) {
+/// The selected trade, in the docked panel.
+pub fn dock(app: &mut App, cx: &Ctx, ctx: &egui::Context) {
+    let mut open_profile: Option<u64> = None;
+    detail_window(app, cx, ctx, &mut open_profile);
+    if let Some(id) = open_profile {
+        app.open_profile(id);
+    }
+}
+
+fn detail_window(app: &mut App, cx: &Ctx, ctx: &egui::Context, open_profile: &mut Option<u64>) {
     let Some(id) = app.trades.selected else {
         return;
     };
@@ -128,13 +135,7 @@ fn detail_window(app: &mut App, cx: &Ctx, ui: &mut Ui, open_profile: &mut Option
     let detail = app.trades.detail.clone();
 
     let mut open = true;
-    egui::Window::new(title)
-        .id(egui::Id::new(("trade", id)))
-        .open(&mut open)
-        .collapsible(false)
-        .resizable(true)
-        .default_width(620.0)
-        .show(ui.ctx(), |ui| match detail {
+    ui::dock(ctx, "trade", 560.0, egui::Id::new(("trade", id)), title, &mut open, |ui| match detail {
             Load::Ready(detail) => detail_body(app, cx, ui, &detail, me, open_profile),
             Load::Err(error) => {
                 failed(ui, &error);
@@ -276,7 +277,14 @@ fn detail_body(
                         let partner = get.user_name.clone();
                         let give_ids = give.assets.iter().map(|asset| asset.user_asset_id).collect();
                         let get_ids = get.assets.iter().map(|asset| asset.user_asset_id).collect();
-                        app.open_trade_builder(partner_id, &partner, Some(detail.id), give_ids, get_ids);
+                        app.open_trade_builder(
+                            partner_id,
+                            &partner,
+                            Some(detail.id),
+                            give_ids,
+                            get_ids,
+                            (give.robux, get.robux),
+                        );
                     }
                     muted(ui, "You confirm on the next step.");
                 });

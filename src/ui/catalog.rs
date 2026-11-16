@@ -113,16 +113,13 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
         }
         _ => waiting(ui, "catalog"),
     }
+}
 
+/// The selected item, in the docked panel.
+pub fn dock(app: &mut App, cx: &Ctx, ctx: &egui::Context) {
     if let Some(item) = app.catalog.selected.clone() {
         let mut open = true;
-        egui::Window::new(format!("Item · {}", item.name))
-            .id(egui::Id::new(("item", item.id)))
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(false)
-            .default_width(430.0)
-            .show(ui.ctx(), |ui| match app.catalog.detail.clone() {
+        ui::dock(ctx, "item", 460.0, egui::Id::new(("item", item.id)), format!("Item · {}", item.name), &mut open, |ui| match app.catalog.detail.clone() {
                 Load::Ready(detail) => {
                     ui.label(RichText::new(&detail.name).size(16.0).strong());
                     muted(

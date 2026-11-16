@@ -813,11 +813,19 @@ pub fn presence_dot(ui: &mut Ui, online: bool) {
 pub fn chrome(app: &mut App, cx: &Ctx, ctx: &egui::Context) {
     top_bar(app, cx, ctx);
     side_nav(app, ctx);
-    // Hidden while a confirmation is up, so the dialog is never behind it.
-    if app.pending_write.is_none() {
-        messages::compose_window(app, ctx);
-        inventory::resale_window(app, cx, ctx);
-        trade_builder::window(app, cx, ctx);
+    // The docked panel: what you opened yourself first, then the screen's item.
+    // Esc is left to the confirmation dialog while one is up.
+    let escape_ok = app.pending_write.is_none();
+    ctx.data_mut(|data| data.insert_temp(egui::Id::new("dock-escape"), escape_ok));
+    trade_builder::window(app, cx, ctx);
+    messages::compose_window(app, ctx);
+    inventory::resale_window(app, cx, ctx);
+    match app.view {
+        View::Catalog => catalog::dock(app, cx, ctx),
+        View::Games => games::dock(app, cx, ctx),
+        View::Groups => groups::dock(app, cx, ctx),
+        View::Trades => trades::dock(app, cx, ctx),
+        _ => {}
     }
     confirm_dialog(app, ctx);
 
@@ -853,6 +861,67 @@ pub fn chrome(app: &mut App, cx: &Ctx, ctx: &egui::Context) {
                         });
                     });
                 });
+        });
+}
+
+/// A docked panel on the right for details and editors, used instead of floating
+/// windows. One at a time: the first one drawn in a frame wins (the shell draws
+/// the trade builder, composer and Sell window before the screen's own item), and
+/// the others stay open underneath. Esc closes it unless a field has the keyboard
+/// or the confirmation dialog is up. Each kind keeps its own width.
+pub fn dock(
+    ctx: &egui::Context,
+    kind: &'static str,
+    width: f32,
+    key: egui::Id,
+    title: impl Into<String>,
+    open: &mut bool,
+    add: impl FnOnce(&mut Ui),
+) {
+    let pass = ctx.cumulative_pass_nr();
+    let used = egui::Id::new("dock-used-pass");
+    if ctx.data(|data| data.get_temp::<u64>(used)) == Some(pass) {
+        return;
+    }
+    ctx.data_mut(|data| data.insert_temp(used, pass));
+
+    let escape_ok = ctx.data(|data| data.get_temp::<bool>(egui::Id::new("dock-escape"))).unwrap_or(true);
+    if escape_ok && !ctx.wants_keyboard_input() && ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+        *open = false;
+        return;
+    }
+
+    let title: String = title.into();
+    let widest = (ctx.screen_rect().width() * 0.65).max(340.0);
+    egui::SidePanel::right(egui::Id::new(("dock", kind)))
+        .resizable(true)
+        .default_width(width.min(widest))
+        .width_range(320.0..=widest)
+        .frame(
+            egui::Frame::none()
+                .fill(panel())
+                .stroke(Stroke::new(1.0, line()))
+                .inner_margin(egui::Margin::symmetric(16.0, 14.0)),
+        )
+        .show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(&title).font(display(19.0)).color(INK));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let close = ui
+                        .add(egui::Button::new(RichText::new("✕").size(15.0).color(MUTED)).frame(false))
+                        .on_hover_text("Close (Esc)")
+                        .on_hover_cursor(egui::CursorIcon::PointingHand);
+                    if close.clicked() {
+                        *open = false;
+                    }
+                });
+            });
+            ui.add_space(2.0);
+            ui.separator();
+            egui::ScrollArea::vertical()
+                .id_salt(key)
+                .auto_shrink([false, false])
+                .show(ui, add);
         });
 }
 

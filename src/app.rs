@@ -173,6 +173,9 @@ pub enum WriteAction {
         counter_of: Option<u64>,
         give_ids: Vec<u64>,
         get_ids: Vec<u64>,
+        /// Robux added on each side (0 for none); also in `give.robux` / `get.robux`.
+        give_robux: u64,
+        get_robux: u64,
         give: TradeSide,
         get: TradeSide,
     },
@@ -490,9 +493,15 @@ fn offer_summary(partner: &str, counter: bool, give: &TradeSide, get: &TradeSide
     };
     for (heading, side) in [("You give", give), ("You get", get)] {
         out.push_str(&format!("{heading} (RAP {})\n", group_digits(side.rap)));
+        if side.items.is_empty() {
+            out.push_str("   no items\n");
+        }
         for (name, rap, serial) in &side.items {
             let serial = serial.map(|serial| format!("  #{serial}")).unwrap_or_default();
             out.push_str(&format!("   · {name}  (RAP {}){serial}\n", group_digits(*rap)));
+        }
+        if let Some(robux) = side.robux.filter(|robux| *robux > 0) {
+            out.push_str(&format!("   · plus {} R$\n", group_digits(robux)));
         }
         out.push('\n');
     }
@@ -505,6 +514,9 @@ fn offer_summary(partner: &str, counter: bool, give: &TradeSide, get: &TradeSide
         }
         std::cmp::Ordering::Equal => "Both sides are worth the same RAP.".to_string(),
     });
+    if give.robux.unwrap_or(0) > 0 {
+        out.push_str("\nYour Robux leave your balance only if they accept.");
+    }
     out.push_str("\nNothing moves until they accept, and they can decline or counter.");
     out
 }
@@ -541,6 +553,9 @@ pub struct TradeBuilder {
     pub get: Vec<u64>,
     pub filter_mine: String,
     pub filter_theirs: String,
+    /// Robux typed for each side (digits only; empty means none).
+    pub give_robux: String,
+    pub get_robux: String,
 }
 
 /// The message being written. It only becomes a write once the user presses
@@ -2014,8 +2029,9 @@ impl App {
                 WriteAction::VoteGame { universe_id, up, .. } => {
                     endpoints::vote_game(&api, *universe_id, *up).await
                 }
-                WriteAction::SendTrade { partner_id, counter_of, give_ids, get_ids, .. } => {
-                    endpoints::send_trade(&api, me, *partner_id, give_ids, get_ids, *counter_of).await
+                WriteAction::SendTrade { partner_id, counter_of, give_ids, get_ids, give_robux, get_robux, .. } => {
+                    endpoints::send_trade(&api, me, *partner_id, give_ids, get_ids, *give_robux, *get_robux, *counter_of)
+                        .await
                 }
                 WriteAction::SetDescription { description } => {
                     endpoints::set_description(&api, description).await
@@ -2443,6 +2459,7 @@ impl App {
         counter_of: Option<u64>,
         give: Vec<u64>,
         get: Vec<u64>,
+        robux: (Option<u64>, Option<u64>),
     ) {
         let Some(me) = self.me_id() else { return };
         if partner_id == me {
@@ -2458,6 +2475,8 @@ impl App {
             get,
             filter_mine: String::new(),
             filter_theirs: String::new(),
+            give_robux: robux.0.filter(|amount| *amount > 0).map(|amount| amount.to_string()).unwrap_or_default(),
+            get_robux: robux.1.filter(|amount| *amount > 0).map(|amount| amount.to_string()).unwrap_or_default(),
         });
         for owner in [me, partner_id] {
             let cx = self.cx();
@@ -3180,6 +3199,21 @@ mod tests {
         assert!(text.ends_with("Nothing moves until they accept, and they can decline or counter."));
         let counter = offer_summary("Larps", true, &give, &get);
         assert!(counter.starts_with("Send Larps this counter offer. It replaces their offer"));
+    }
+
+    #[test]
+    fn offer_summary_lists_robux() {
+        let (mut give, mut get) = sample();
+        give.robux = Some(1500);
+        get.robux = Some(20);
+        let text = offer_summary("Larps", false, &give, &get);
+        assert!(text.contains("   · plus 1,500 R$\n"));
+        assert!(text.contains("   · plus 20 R$\n"));
+        assert!(text.contains("Your Robux leave your balance only if they accept."));
+        // Nothing about Robux when there is none (the sample has some on their side).
+        let (give, mut get) = sample();
+        get.robux = None;
+        assert!(!offer_summary("Larps", false, &give, &get).contains("R$"));
     }
 
     #[test]

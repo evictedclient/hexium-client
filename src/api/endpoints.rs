@@ -1275,15 +1275,16 @@ pub fn trade_body(me: u64, partner: u64, give: &[u64], get: &[u64], give_robux: 
 }
 
 /// A counter's body: the same two sides, the partner's first.
-pub fn counter_body(me: u64, partner: u64, give: &[u64], get: &[u64]) -> Value {
-    let mut body = trade_body(me, partner, give, get, 0, 0);
+pub fn counter_body(me: u64, partner: u64, give: &[u64], get: &[u64], give_robux: u64, get_robux: u64) -> Value {
+    let mut body = trade_body(me, partner, give, get, give_robux, get_robux);
     if let Some(offers) = body["offers"].as_array_mut() {
         offers.reverse();
     }
     body
 }
 
-/// `api-trades.js` `sendTrade` / `counterTrade`. No Robux is added on either side.
+/// `api-trades.js` `sendTrade` / `counterTrade`, with optional Robux on either side
+/// (the site's `offerRobux` / `requestRobux`).
 ///
 /// A new trade lists your offer first. A counter keeps the original trade's
 /// order, the original sender (your partner) first: with your side first this
@@ -1295,11 +1296,13 @@ pub async fn send_trade(
     partner: u64,
     give: &[u64],
     get: &[u64],
+    give_robux: u64,
+    get_robux: u64,
     counter_of: Option<u64>,
 ) -> Result<()> {
     let body = match counter_of {
-        Some(_) => counter_body(me, partner, give, get),
-        None => trade_body(me, partner, give, get, 0, 0),
+        Some(_) => counter_body(me, partner, give, get, give_robux, get_robux),
+        None => trade_body(me, partner, give, get, give_robux, get_robux),
     };
     let path = match counter_of {
         Some(id) => api("trades", &format!("/v1/trades/{id}/counter")),
@@ -1593,11 +1596,16 @@ mod trade_tests {
     /// A counter puts the partner's side first; each side keeps its own items.
     #[test]
     fn counter_puts_the_partner_first() {
-        let body = counter_body(1, 2, &[10, 11], &[20]);
+        let body = counter_body(1, 2, &[10, 11], &[20], 0, 0);
         assert_eq!(body["offers"][0]["userId"], 2);
         assert_eq!(body["offers"][0]["userAssetIds"], serde_json::json!([20]));
         assert_eq!(body["offers"][1]["userId"], 1);
         assert_eq!(body["offers"][1]["userAssetIds"], serde_json::json!([10, 11]));
         assert!(body["offers"][0].get("robux").is_none());
+
+        // Robux stays with its own side when the order flips.
+        let paid = counter_body(1, 2, &[10], &[20], 30, 0);
+        assert!(paid["offers"][0].get("robux").is_none());
+        assert_eq!(paid["offers"][1]["robux"], 30);
     }
 }

@@ -60,22 +60,19 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
         }
         _ => waiting(ui, "groups"),
     }
+}
 
+/// The selected group, in the docked panel.
+pub fn dock(app: &mut App, cx: &Ctx, ctx: &egui::Context) {
     let detail = app.groups.detail.clone();
     if let Some(id) = app.groups.selected {
         let mut open = true;
-        egui::Window::new(match &detail {
+        ui::dock(ctx, "group", 480.0, egui::Id::new(("group", id)), match &detail {
             Load::Ready(detail) if !detail.info.name.is_empty() => {
                 format!("Group · {}", detail.info.name)
             }
             _ => format!("Group {id}"),
-        })
-            .id(egui::Id::new(("group", id)))
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(true)
-            .default_width(520.0)
-            .show(ui.ctx(), |ui| match detail {
+        }, &mut open, |ui| match detail {
                 Load::Ready(detail) => {
                     ui.horizontal_top(|ui| {
                         app.thumbs.show(ui, cx, detail.icon.as_deref(), egui::vec2(72.0, 72.0));
