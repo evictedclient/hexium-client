@@ -1,7 +1,7 @@
 use eframe::egui::{self, RichText, Ui};
 
 use crate::app::{App, Load, WriteAction};
-use crate::ui::{self, failed, h1, muted, waiting, Ctx, GOLD, GREEN, MUTED};
+use crate::ui::{self, accent, failed, h1, muted, waiting, Ctx, GOLD, GREEN, MUTED};
 
 pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
     app.load_catalog_nav();
@@ -170,6 +170,10 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
                             ui.add(egui::Spinner::new().size(12.0));
                         }
                     });
+                    if detail.limited {
+                        ui.add_space(8.0);
+                        resellers(app, cx, ui, detail.id);
+                    }
                 }
                 Load::Err(error) => {
                     failed(ui, &error);
@@ -184,6 +188,94 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
         if !open {
             app.catalog.selected = None;
         }
+    }
+}
+
+/// Everyone selling a copy of this limited, cheapest first. Read-only: buying
+/// needs the site's purchase proof, which this client does not fake.
+fn resellers(app: &mut App, cx: &Ctx, ui: &mut Ui, asset: u64) {
+    let me = app.session.ready().map(|session| session.user.id).unwrap_or(0);
+    let page = app.catalog.resellers.clone();
+    ui.horizontal(|ui| {
+        ui::eyebrow(ui, "Resellers");
+        if let Load::Ready(page) = &page {
+            let more = if page.next.is_some() { "+" } else { "" };
+            muted(ui, &format!("{}{more}", page.items.len()));
+        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let busy = matches!(page, Load::Busy);
+            if ui.add_enabled(!busy, egui::Button::new("Refresh").small()).clicked() {
+                app.load_resellers(asset, None);
+            }
+        });
+    });
+    let page = match page {
+        Load::Ready(page) if page.asset_id == asset => page,
+        Load::Err(error) => {
+            failed(ui, &format!("Could not load resellers: {error}"));
+            return;
+        }
+        Load::Busy => {
+            waiting(ui, "resellers");
+            return;
+        }
+        _ => return,
+    };
+    if page.items.is_empty() {
+        muted(ui, "Nobody is selling a copy right now.");
+        return;
+    }
+
+    let mut open_profile: Option<u64> = None;
+    egui::ScrollArea::vertical()
+        .id_salt(("resellers", asset))
+        .max_height(240.0)
+        .auto_shrink([false, true])
+        .show(ui, |ui| {
+            for (index, listing) in page.items.iter().enumerate() {
+                egui::Frame::none()
+                    .fill(if index == 0 { ui::tint(GOLD, 22) } else { ui::card() })
+                    .stroke(egui::Stroke::new(1.0, if index == 0 { ui::tint(GOLD, 120) } else { ui::line() }))
+                    .rounding(egui::Rounding::same(7.0))
+                    .inner_margin(egui::Margin::symmetric(8.0, 5.0))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.horizontal(|ui| {
+                            let icon = page.icons.get(&listing.seller_id).cloned();
+                            app.thumbs.show(ui, cx, icon.as_deref(), egui::vec2(24.0, 24.0));
+                            let name = if listing.seller_name.is_empty() { "unknown" } else { listing.seller_name.as_str() };
+                            if listing.seller_id != 0 && ui.link(RichText::new(name).size(12.5)).clicked() {
+                                open_profile = Some(listing.seller_id);
+                            } else if listing.seller_id == 0 {
+                                ui.label(RichText::new(name).size(12.5));
+                            }
+                            if listing.seller_id == me && me != 0 {
+                                ui::pill(ui, "YOU", accent());
+                            }
+                            if let Some(serial) = listing.serial {
+                                ui.label(RichText::new(format!("#{serial}")).size(11.5).color(MUTED));
+                            }
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                ui.label(
+                                    RichText::new(format!("{} R$", ui::money(listing.price as i64)))
+                                        .font(ui::semibold(13.0))
+                                        .color(GOLD),
+                                );
+                            });
+                        });
+                    });
+                ui.add_space(2.0);
+            }
+            if let Some(cursor) = page.next.clone() {
+                if app.catalog.resellers_more {
+                    waiting(ui, "more resellers");
+                } else if ui.button("Load more").clicked() {
+                    app.load_resellers(asset, Some(cursor));
+                }
+            }
+        });
+    if let Some(id) = open_profile {
+        app.open_profile(id);
     }
 }
 

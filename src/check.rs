@@ -792,6 +792,32 @@ async fn run_all(client: &ApiClient) -> Vec<Row> {
         };
         rows.push(Row { name: "games/getgameinstancesjson", detail, verdict, ms: started.elapsed().as_millis() });
     }
+    // -- resellers of one of your limiteds ------------------------------------
+    {
+        let started = Instant::now();
+        let (verdict, detail) = match endpoints::collectibles(client, me).await {
+            Ok(items) => match items.first() {
+                Some(item) => match endpoints::resellers(client, item.id, None).await {
+                    Ok(page) => {
+                        let sorted = page.items.windows(2).all(|pair| pair[0].price <= pair[1].price);
+                        let serials = page.items.iter().filter(|listing| listing.serial.is_some()).count();
+                        (
+                            if sorted { Verdict::Pass } else { Verdict::Fail },
+                            format!(
+                                "{} listing(s){} · {serials} with serials · cheapest first: {sorted}",
+                                page.items.len(),
+                                if page.next.is_some() { "+" } else { "" }
+                            ),
+                        )
+                    }
+                    Err(error) => (Verdict::Fail, error.to_string()),
+                },
+                None => (Verdict::Warn, "skipped · you own no collectibles to look up".to_string()),
+            },
+            Err(error) => (Verdict::Warn, format!("skipped · {error}")),
+        };
+        rows.push(Row { name: "economy/v1/assets/{id}/resellers", detail, verdict, ms: started.elapsed().as_millis() });
+    }
     rows.push(match crate::play::launcher_registered() {
         Some(command) => Row {
             name: "hexium:// launcher",

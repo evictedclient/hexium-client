@@ -10,7 +10,8 @@ Not affiliated with hexium.wtf or Roblox.
 
 - **Home**: a dashboard with your balances, what needs answering (messages, friend
   requests, trade offers), friends online and site events.
-- **Browse**: games, the catalog (with item details), groups.
+- **Browse**: games, the catalog (with item details; limiteds show their resellers, cheapest
+  first, with serials), groups.
 - **Play**: the Play button in a game's details fetches a join ticket and starts your
   installed Hexium launcher through `hexium://`, the same way the site does.
   Below it, the game's running servers (players, ping, fps) each have a Join button.

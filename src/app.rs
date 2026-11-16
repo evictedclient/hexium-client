@@ -141,6 +141,8 @@ pub enum Msg {
     OpenChat(u64),
     /// Play finished: the place and the client year, or why it failed.
     GameLaunched(u64, Res<String>),
+    /// A page of resellers: (asset, whether it continues a list, result).
+    Resellers(u64, bool, Res<models::ResellersPage>),
     /// Join friend finished: the friend, and the client year or why not.
     FriendJoined(u64, Res<String>),
     /// A page of servers: (place, first index asked for, result).
@@ -604,6 +606,9 @@ pub struct CatalogState {
     pub detail: Load<models::CatalogItem>,
     /// Favourite state of the item in the details window.
     pub favourite: Load<bool>,
+    /// Resellers of the limited in the details window.
+    pub resellers: Load<models::ResellersPage>,
+    pub resellers_more: bool,
 }
 
 #[derive(Default)]
@@ -1040,11 +1045,31 @@ impl App {
         });
     }
 
+    /// Resellers of a limited; with `cursor`, the next page is added on.
+    pub fn load_resellers(&mut self, asset: u64, cursor: Option<String>) {
+        let more = cursor.is_some();
+        if more {
+            self.catalog.resellers_more = true;
+        } else {
+            self.catalog.resellers = Load::Busy;
+        }
+        let cx = self.cx();
+        let api = cx.api.clone();
+        cx.spawn(async move {
+            Msg::Resellers(
+                asset,
+                more,
+                endpoints::resellers(&api, asset, cursor.as_deref()).await.map_err(|error| error.to_string()),
+            )
+        });
+    }
+
     pub fn load_catalog_detail(&mut self, id: u64) {
         if !self.catalog.detail.is_idle() {
             return;
         }
         self.catalog.detail = Load::Busy;
+        self.catalog.resellers = Load::Idle;
         self.load_favourite_state(id);
         let cx = self.cx();
         let api = cx.api.clone();
@@ -2642,7 +2667,39 @@ impl App {
                     Err(error) => self.catalog.more_error = Some(error),
                 }
             }
-            Msg::CatalogDetail(result) => self.catalog.detail = into_load(result),
+            Msg::CatalogDetail(result) => {
+                let limited = result.as_ref().ok().filter(|item| item.limited).map(|item| item.id);
+                self.catalog.detail = into_load(result);
+                if let Some(asset) = limited {
+                    self.load_resellers(asset, None);
+                }
+            }
+            Msg::Resellers(asset, more, result) => {
+                let showing = self.catalog.selected.as_ref().map(|item| item.id);
+                if showing != Some(asset) {
+                    return;
+                }
+                if !more {
+                    self.catalog.resellers = into_load(result);
+                } else {
+                    self.catalog.resellers_more = false;
+                    match result {
+                        Ok(page) => {
+                            if let Load::Ready(existing) = &mut self.catalog.resellers {
+                                for item in page.items {
+                                    if !existing.items.iter().any(|old| old.user_asset_id == item.user_asset_id) {
+                                        existing.items.push(item);
+                                    }
+                                }
+                                existing.icons.extend(page.icons);
+                                existing.next = page.next;
+                                models::sort_resellers(&mut existing.items);
+                            }
+                        }
+                        Err(error) => self.notice = Some((false, format!("Could not load more resellers: {error}"))),
+                    }
+                }
+            }
             Msg::Profile(result) => {
                 if let Ok(bundle) = &result {
                     let id = bundle.user.id;

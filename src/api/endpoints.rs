@@ -1500,3 +1500,35 @@ pub async fn find_server_of(client: &ApiClient, place: u64, user: u64) -> Result
     }
     Ok(None)
 }
+
+// ---------------------------------------------------------------------------
+// Resellers
+// ---------------------------------------------------------------------------
+
+/// One page of a limited's resellers, cheapest first, with seller headshots.
+pub async fn resellers(client: &ApiClient, asset: u64, cursor: Option<&str>) -> Result<ResellersPage> {
+    let query = [("limit", "100".to_string()), ("cursor", cursor.unwrap_or_default().to_string())];
+    let value = client
+        .get_query(&api("economy", &format!("/v1/assets/{asset}/resellers")), &query)
+        .await?;
+    let mut items: Vec<Reseller> = first_array(&value, &["data"])
+        .iter()
+        .map(Reseller::from_value)
+        .filter(|item| item.price > 0)
+        .collect();
+    sort_resellers(&mut items);
+    let mut ids: Vec<u64> = items.iter().map(|item| item.seller_id).filter(|id| *id != 0).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    let icons = headshots(client, &ids).await.unwrap_or_default();
+    Ok(ResellersPage {
+        asset_id: asset,
+        items,
+        icons,
+        next: value
+            .get("nextPageCursor")
+            .and_then(Value::as_str)
+            .filter(|cursor| !cursor.is_empty())
+            .map(str::to_string),
+    })
+}

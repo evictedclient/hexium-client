@@ -1339,3 +1339,73 @@ mod catalog_tests {
         assert!(gone.off_sale && !gone.resold && gone.limited_tag().is_none());
     }
 }
+
+// ---------------------------------------------------------------------------
+// Resellers of a limited (`economy/v1/assets/{id}/resellers`)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Reseller {
+    pub user_asset_id: u64,
+    pub seller_id: u64,
+    pub seller_name: String,
+    pub price: u64,
+    /// Only numbered (LimitedUnique) copies have one.
+    pub serial: Option<u64>,
+}
+
+impl Reseller {
+    pub fn from_value(value: &Value) -> Self {
+        let empty = Value::Null;
+        let seller = value.get("seller").unwrap_or(&empty);
+        Self {
+            user_asset_id: num_at(value, "userAssetId"),
+            seller_id: num_at(seller, "id"),
+            seller_name: str_at(seller, "name"),
+            price: num_at(value, "price"),
+            serial: opt_num_at(value, "serialNumber").filter(|serial| *serial > 0),
+        }
+    }
+}
+
+/// Cheapest first; equal prices by lowest serial.
+pub fn sort_resellers(items: &mut [Reseller]) {
+    items.sort_by(|a, b| {
+        a.price
+            .cmp(&b.price)
+            .then(a.serial.unwrap_or(u64::MAX).cmp(&b.serial.unwrap_or(u64::MAX)))
+    });
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ResellersPage {
+    pub asset_id: u64,
+    pub items: Vec<Reseller>,
+    /// Seller headshots by user id.
+    pub icons: HashMap<u64, String>,
+    pub next: Option<String>,
+}
+
+#[cfg(test)]
+mod reseller_tests {
+    use super::*;
+
+    #[test]
+    fn parses_and_sorts_cheapest_first() {
+        let value: Value = serde_json::from_str(
+            r#"{"nextPageCursor":null,"data":[
+                {"userAssetId":1,"seller":{"id":7,"type":"User","name":"B"},"price":900,"serialNumber":3},
+                {"userAssetId":2,"seller":{"id":8,"type":"User","name":"A"},"price":550,"serialNumber":12},
+                {"userAssetId":3,"seller":{"id":9,"type":"User","name":"C"},"price":550,"serialNumber":4},
+                {"userAssetId":4,"seller":{"id":6,"type":"User","name":"D"},"price":600,"serialNumber":null}]}"#,
+        )
+        .unwrap();
+        let mut items: Vec<Reseller> = first_array(&value, &["data"]).iter().map(Reseller::from_value).collect();
+        sort_resellers(&mut items);
+        let order: Vec<u64> = items.iter().map(|item| item.user_asset_id).collect();
+        assert_eq!(order, vec![3, 2, 4, 1]);
+        assert_eq!(items[0].serial, Some(4));
+        assert_eq!(items[2].serial, None);
+        assert_eq!(items[1].seller_name, "A");
+    }
+}
