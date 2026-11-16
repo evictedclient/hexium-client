@@ -19,6 +19,9 @@ Not affiliated with hexium.wtf or Roblox.
   hub is down.
   New chat messages that arrive while the client is in the background, or while you
   are on another screen or chat, show as Windows notifications (switchable in Settings).
+  On first start the client adds a "hexium client" shortcut to your Start menu (per
+  user, no admin) with its own AppUserModelID, so those notifications carry its name and
+  icon; `hexium-client --register` does only that step.
 - **Writes**, each behind a confirmation dialog that says exactly what will change:
   follow / unfollow, favourite / unfavourite, set your status and description, vote on games, mark messages read or
   unread (or all at once), archive / unarchive messages, send / accept / decline friend requests, unfriend, send private messages

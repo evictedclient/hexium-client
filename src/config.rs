@@ -28,6 +28,9 @@ pub struct Config {
     /// Windows notifications for chat messages you are not looking at.
     #[serde(default = "default_true")]
     pub chat_notifications: bool,
+    /// The exe the Start-menu shortcut was last written for.
+    #[serde(default)]
+    pub shortcut_exe: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -65,6 +68,7 @@ impl Default for Config {
             window_height: default_height(),
             share_typing: true,
             chat_notifications: true,
+            shortcut_exe: None,
         }
     }
 }

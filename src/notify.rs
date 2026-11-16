@@ -74,7 +74,13 @@ pub fn decide(
 pub fn show(rt: &tokio::runtime::Handle, title: String, body: String) {
     rt.spawn_blocking(move || {
         // Best effort: a toast that fails to show changes nothing else.
-        let _ = notify_rust::Notification::new()
+        let mut toast = notify_rust::Notification::new();
+        // Our own id only once the shortcut that defines it exists.
+        #[cfg(windows)]
+        if crate::shortcut::registered() {
+            toast.app_id(crate::shortcut::APP_ID);
+        }
+        let _ = toast
             .appname("hexium client")
             .summary(&title)
             .body(&body)

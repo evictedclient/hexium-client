@@ -4,7 +4,9 @@ mod api;
 mod app;
 mod check;
 mod config;
+mod icon;
 mod notify;
+mod shortcut;
 mod ui;
 
 use std::sync::Arc;
@@ -17,16 +19,34 @@ fn main() -> eframe::Result<()> {
         attach_parent_console();
         std::process::exit(check::run());
     }
+    if arguments.iter().any(|argument| argument == "--register") {
+        attach_parent_console();
+        let mut config = config::load();
+        return match shortcut::register(&mut config) {
+            Ok(()) => {
+                println!("registered as {} (Start menu shortcut \"hexium client\")", shortcut::APP_ID);
+                Ok(())
+            }
+            Err(error) => {
+                eprintln!("could not register: {error}");
+                std::process::exit(1);
+            }
+        };
+    }
     if arguments.iter().any(|argument| argument == "--help" || argument == "-h") {
         attach_parent_console();
         println!("hexium client");
         println!("  (no arguments)   start the desktop client");
         println!("  --check          hit every read endpoint once and report what parsed");
+        println!("  --register       add the Start menu shortcut that gives notifications their name and icon");
         println!("  --help           this text");
         return Ok(());
     }
 
-    let config = config::load();
+    let mut config = config::load();
+    // Own name and icon for notifications. Best effort: without it, toasts fall
+    // back to PowerShell's id and still show.
+    let _ = shortcut::register(&mut config);
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .worker_threads(4)
@@ -42,7 +62,12 @@ fn main() -> eframe::Result<()> {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_inner_size([config.window_width, config.window_height])
             .with_min_inner_size([1000.0, 640.0])
-            .with_title("Hexium"),
+            .with_title("Hexium")
+            .with_icon(Arc::new(eframe::egui::IconData {
+                rgba: icon::rgba(64),
+                width: 64,
+                height: 64,
+            })),
         ..Default::default()
     };
 
