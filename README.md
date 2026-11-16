@@ -17,8 +17,8 @@ Not affiliated with hexium.wtf or Roblox.
 - **Writes**, each behind a confirmation dialog that says exactly what will change:
   follow / unfollow, favourite / unfavourite, set your status and description, vote on games, mark messages read or
   unread (or all at once), archive / unarchive messages, send / accept / decline friend requests, unfriend, send private messages
-  and replies, accept / decline inbound trades (the dialog lists both sides and
-  their RAP totals), list a collectible for sale, change its price or take it off
+  and replies, accept / decline / counter inbound trades and send new ones from a
+  trade builder (the dialog lists both sides and their RAP totals), list a collectible for sale, change its price or take it off
   sale (with its RAP and the cheapest other listing).
 - **Make it yours**: pick an accent colour and background in Settings.
 

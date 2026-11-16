@@ -107,6 +107,9 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
                             if ui.button("Message").clicked() {
                                 app.compose_to(user.id, &user.name);
                             }
+                            if ui.button("Trade").clicked() {
+                                app.open_trade_builder(user.id, &user.name, None, Vec::new(), Vec::new());
+                            }
                         }
                     });
 

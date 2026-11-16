@@ -120,6 +120,7 @@ pub enum Msg {
     FriendshipState(u64, Res<String>),
     FriendRequests(Res<models::FriendRequestsBundle>),
     UnreadIds(Res<Vec<u64>>),
+    TradeInventory { owner: u64, result: Res<models::TradeInventory> },
     GameVote(u64, Res<models::GameVoteState>),
     Resale(u64, Res<models::ResaleInfo>),
     FavouriteState(u64, Res<bool>),
@@ -137,6 +138,16 @@ pub enum WriteAction {
     Archive { message_id: u64, subject: String, archive: bool },
     MarkAllRead { ids: Vec<u64> },
     VoteGame { universe_id: u64, name: String, up: bool, previous: Option<bool> },
+    /// A new trade, or a counter when `counter_of` is set.
+    SendTrade {
+        partner_id: u64,
+        partner: String,
+        counter_of: Option<u64>,
+        give_ids: Vec<u64>,
+        get_ids: Vec<u64>,
+        give: TradeSide,
+        get: TradeSide,
+    },
     SetDescription { description: String },
     RequestFriend { user_id: u64, name: String },
     AcceptFriend { user_id: u64, name: String },
@@ -184,6 +195,8 @@ impl WriteAction {
             WriteAction::Archive { archive: true, .. } => "Archive message".to_string(),
             WriteAction::Archive { archive: false, .. } => "Move to inbox".to_string(),
             WriteAction::MarkAllRead { .. } => "Mark all as read".to_string(),
+            WriteAction::SendTrade { counter_of: Some(_), .. } => "Send counter offer".to_string(),
+            WriteAction::SendTrade { .. } => "Send trade".to_string(),
             WriteAction::VoteGame { up: true, .. } => "Thumbs up".to_string(),
             WriteAction::VoteGame { up: false, .. } => "Thumbs down".to_string(),
             WriteAction::SetDescription { .. } => "Change description".to_string(),
@@ -231,6 +244,9 @@ impl WriteAction {
                 } else {
                     format!("\"{subject}\" moves back to your inbox.")
                 }
+            }
+            WriteAction::SendTrade { partner, counter_of, give, get, .. } => {
+                offer_summary(partner, counter_of.is_some(), give, get)
             }
             WriteAction::VoteGame { name, up, previous, .. } => {
                 let which = if *up { "thumbs up" } else { "thumbs down" };
@@ -304,6 +320,8 @@ impl WriteAction {
             WriteAction::Archive { archive: true, .. } => "Archive",
             WriteAction::Archive { archive: false, .. } => "Move to inbox",
             WriteAction::MarkAllRead { .. } => "Mark all read",
+            WriteAction::SendTrade { counter_of: Some(_), .. } => "Send counter",
+            WriteAction::SendTrade { .. } => "Send trade",
             WriteAction::VoteGame { up: true, .. } => "Thumbs up",
             WriteAction::VoteGame { up: false, .. } => "Thumbs down",
             WriteAction::SetDescription { .. } => "Save description",
@@ -422,8 +440,55 @@ fn resale_summary(
     out
 }
 
+/// What sending (or countering with) this offer means, with both sides listed.
+fn offer_summary(partner: &str, counter: bool, give: &TradeSide, get: &TradeSide) -> String {
+    let mut out = if counter {
+        format!("Send {partner} this counter offer. It replaces their offer, which you can no longer accept.\n\n")
+    } else {
+        format!("Send {partner} this trade.\n\n")
+    };
+    for (heading, side) in [("You give", give), ("You get", get)] {
+        out.push_str(&format!("{heading} (RAP {})\n", group_digits(side.rap)));
+        for (name, rap, serial) in &side.items {
+            let serial = serial.map(|serial| format!("  #{serial}")).unwrap_or_default();
+            out.push_str(&format!("   · {name}  (RAP {}){serial}\n", group_digits(*rap)));
+        }
+        out.push('\n');
+    }
+    out.push_str(&match get.rap.cmp(&give.rap) {
+        std::cmp::Ordering::Greater => {
+            format!("You would get {} RAP more than you give.", group_digits(get.rap - give.rap))
+        }
+        std::cmp::Ordering::Less => {
+            format!("You would give {} RAP more than you get.", group_digits(give.rap - get.rap))
+        }
+        std::cmp::Ordering::Equal => "Both sides are worth the same RAP.".to_string(),
+    });
+    out.push_str("\nNothing moves until they accept, and they can decline or counter.");
+    out
+}
+
 fn group_digits(value: u64) -> String {
     crate::ui::money(value as i64)
+}
+
+/// Most items either side of a trade can hold (the most seen on the site, and
+/// Roblox's own limit).
+pub const TRADE_SIDE_LIMIT: usize = 4;
+
+/// The trade builder window: a new trade, or a counter to an inbound one.
+pub struct TradeBuilder {
+    pub partner_id: u64,
+    pub partner: String,
+    /// Set when this counters an inbound trade.
+    pub counter_of: Option<u64>,
+    pub mine: Load<models::TradeInventory>,
+    pub theirs: Load<models::TradeInventory>,
+    /// Picked copies (user asset ids).
+    pub give: Vec<u64>,
+    pub get: Vec<u64>,
+    pub filter_mine: String,
+    pub filter_theirs: String,
 }
 
 /// The message being written. It only becomes a write once the user presses
@@ -581,6 +646,7 @@ pub struct App {
     pub probe_result: Option<bool>,
     pub pending_write: Option<PendingWrite>,
     pub compose: Option<Compose>,
+    pub trade_builder: Option<TradeBuilder>,
     /// Result of the last write: (succeeded, message).
     pub notice: Option<(bool, String)>,
     pub home: HomeState,
@@ -627,6 +693,7 @@ impl App {
             probe_result: None,
             pending_write: None,
             compose: None,
+            trade_builder: None,
             notice: None,
             home: HomeState::default(),
             friends: FriendsState::default(),
@@ -1222,6 +1289,9 @@ impl App {
                 WriteAction::VoteGame { universe_id, up, .. } => {
                     endpoints::vote_game(&api, *universe_id, *up).await
                 }
+                WriteAction::SendTrade { partner_id, counter_of, give_ids, get_ids, .. } => {
+                    endpoints::send_trade(&api, me, *partner_id, give_ids, get_ids, *counter_of).await
+                }
                 WriteAction::SetDescription { description } => {
                     endpoints::set_description(&api, description).await
                 }
@@ -1330,6 +1400,28 @@ impl App {
                     format!("Moved \"{subject}\" to Archive.")
                 } else {
                     format!("Moved \"{subject}\" back to your inbox.")
+                }
+            }
+            WriteAction::SendTrade { partner, counter_of, .. } => {
+                self.trade_builder = None;
+                if let Some(id) = counter_of {
+                    // The countered offer is no longer open for you to answer.
+                    if let Load::Ready(page) = &mut self.trades.data {
+                        page.items.retain(|trade| trade.id != *id);
+                    }
+                    if self.trades.selected == Some(*id) {
+                        self.trades.selected = None;
+                        self.trades.detail = Load::Idle;
+                    }
+                }
+                if self.trades_tab() == "outbound" {
+                    self.trades.data = Load::Idle;
+                }
+                self.load_session();
+                if counter_of.is_some() {
+                    format!("Counter offer sent to {partner}.")
+                } else {
+                    format!("Trade sent to {partner}.")
                 }
             }
             WriteAction::VoteGame { universe_id, name, up, previous } => {
@@ -1599,6 +1691,45 @@ impl App {
         });
     }
 
+    /// Opens the trade builder with `partner`, optionally prefilled (a counter
+    /// starts from the offer being countered), and loads both inventories.
+    pub fn open_trade_builder(
+        &mut self,
+        partner_id: u64,
+        partner: &str,
+        counter_of: Option<u64>,
+        give: Vec<u64>,
+        get: Vec<u64>,
+    ) {
+        let Some(me) = self.me_id() else { return };
+        if partner_id == me {
+            return;
+        }
+        self.trade_builder = Some(TradeBuilder {
+            partner_id,
+            partner: partner.to_string(),
+            counter_of,
+            mine: Load::Busy,
+            theirs: Load::Busy,
+            give,
+            get,
+            filter_mine: String::new(),
+            filter_theirs: String::new(),
+        });
+        for owner in [me, partner_id] {
+            let cx = self.cx();
+            let api = cx.api.clone();
+            cx.spawn(async move {
+                Msg::TradeInventory {
+                    owner,
+                    result: endpoints::trade_inventory(&api, owner)
+                        .await
+                        .map_err(|error| error.to_string()),
+                }
+            });
+        }
+    }
+
     pub fn probe(&mut self) {
         let cx = self.cx();
         let api = cx.api.clone();
@@ -1701,6 +1832,7 @@ impl App {
         self.probe_result = None;
         self.pending_write = None;
         self.compose = None;
+        self.trade_builder = None;
         self.notice = None;
         self.alert = None;
         self.maintenance = None;
@@ -1843,6 +1975,16 @@ impl App {
             Msg::GameVote(universe, result) => {
                 if self.selected_game_id() == Some(universe) {
                     self.games.vote = into_load(result);
+                }
+            }
+            Msg::TradeInventory { owner, result } => {
+                let me = self.me_id();
+                if let Some(builder) = self.trade_builder.as_mut() {
+                    if Some(owner) == me {
+                        builder.mine = into_load(result);
+                    } else if owner == builder.partner_id {
+                        builder.theirs = into_load(result);
+                    }
                 }
             }
             Msg::UnreadIds(result) => {
@@ -2066,6 +2208,18 @@ mod tests {
         assert_eq!(fresh, "Your account gives \"Tower of Hell\" a thumbs up.");
         let switch = WriteAction::VoteGame { universe_id: 1, name: "Tower of Hell".into(), up: false, previous: Some(true) }.description();
         assert!(switch.ends_with("This replaces your thumbs up."));
+    }
+
+    #[test]
+    fn offer_summary_new_and_counter() {
+        let (give, get) = sample();
+        let text = offer_summary("Larps", false, &give, &get);
+        assert!(text.starts_with("Send Larps this trade."));
+        assert!(text.contains("You give (RAP 11,442)"));
+        assert!(text.contains("You would get 5,058 RAP more than you give."));
+        assert!(text.ends_with("Nothing moves until they accept, and they can decline or counter."));
+        let counter = offer_summary("Larps", true, &give, &get);
+        assert!(counter.starts_with("Send Larps this counter offer. It replaces their offer"));
     }
 
     #[test]

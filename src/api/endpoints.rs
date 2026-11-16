@@ -1168,3 +1168,62 @@ pub async fn set_description(client: &ApiClient, description: &str) -> Result<()
         .await?;
     Ok(())
 }
+
+/// Every collectible a user owns, following the cursor (some users have hundreds),
+/// with thumbnails. Stops after 10 pages of 100 as a safety limit.
+pub async fn trade_inventory(client: &ApiClient, id: u64) -> Result<TradeInventory> {
+    let path = api("inventory", &format!("/v1/users/{id}/assets/collectibles"));
+    let mut items: Vec<Collectible> = Vec::new();
+    let mut cursor = String::new();
+    for _ in 0..10 {
+        let value = client
+            .get_query(&path, &[("limit", "100".to_string()), ("cursor", cursor.clone())])
+            .await?;
+        items.extend(
+            first_array(&value, &["data"])
+                .iter()
+                .map(Collectible::from_value)
+                .filter(|item| item.id != 0 && item.user_asset_id != 0),
+        );
+        match value.get("nextPageCursor").and_then(Value::as_str) {
+            Some(next) if !next.is_empty() => cursor = next.to_string(),
+            _ => break,
+        }
+    }
+    items.sort_by(|a, b| b.rap.cmp(&a.rap).then_with(|| a.name.cmp(&b.name)));
+
+    let mut asset_ids: Vec<u64> = items.iter().map(|item| item.id).collect();
+    asset_ids.sort_unstable();
+    asset_ids.dedup();
+    let mut icons = HashMap::new();
+    for chunk in asset_ids.chunks(100) {
+        if let Ok(batch) = asset_icons(client, chunk).await {
+            icons.extend(batch);
+        }
+    }
+    Ok(TradeInventory { items, icons })
+}
+
+/// `api-trades.js` `sendTrade` / `counterTrade`: your offer first, theirs second.
+/// No Robux is added on either side.
+pub async fn send_trade(
+    client: &ApiClient,
+    me: u64,
+    partner: u64,
+    give: &[u64],
+    get: &[u64],
+    counter_of: Option<u64>,
+) -> Result<()> {
+    let body = json!({
+        "offers": [
+            { "robux": 0, "userAssetIds": give, "userId": me },
+            { "robux": 0, "userAssetIds": get, "userId": partner },
+        ]
+    });
+    let path = match counter_of {
+        Some(id) => api("trades", &format!("/v1/trades/{id}/counter")),
+        None => api("trades", "/v1/trades/send"),
+    };
+    client.post(&path, Some(body)).await?;
+    Ok(())
+}

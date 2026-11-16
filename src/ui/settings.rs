@@ -125,7 +125,7 @@ pub fn show(app: &mut App, _cx: &Ctx, ui: &mut Ui) {
     ui.add_space(10.0);
     muted(
         ui,
-        "Not wired yet: purchases, sending or countering trades, chat, and avatar edits. Those are write \
+        "Not wired yet: purchases, Robux in trades, chat, and avatar edits. Those are write \
          paths the capture never exercised, so this client stops at reading.",
     );
     muted(
@@ -134,6 +134,6 @@ pub fn show(app: &mut App, _cx: &Ctx, ui: &mut Ui) {
     );
     muted(
         ui,
-        "Writes so far: follow and unfollow, friend requests (send, accept, decline) and unfriending, favourites, your status and description, game votes, message read state and archiving, sending private messages and replies, accepting or declining inbound trades, and listing collectibles for sale. Each one asks for confirmation before anything is sent.",
+        "Writes so far: follow and unfollow, friend requests (send, accept, decline) and unfriending, favourites, your status and description, game votes, message read state and archiving, sending private messages and replies, accepting, declining or countering inbound trades, sending new trades, and listing collectibles for sale. Each one asks for confirmation before anything is sent.",
     );
 }

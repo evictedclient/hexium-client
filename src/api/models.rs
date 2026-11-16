@@ -978,3 +978,12 @@ pub struct GameVoteState {
     /// Why voting is not allowed, when the site says.
     pub reason: Option<String>,
 }
+
+/// Someone's tradeable collectibles with their thumbnails, for the trade builder.
+#[derive(Debug, Clone, Default)]
+pub struct TradeInventory {
+    /// Highest RAP first.
+    pub items: Vec<Collectible>,
+    /// Asset id -> thumbnail.
+    pub icons: HashMap<u64, String>,
+}

@@ -16,6 +16,7 @@ pub mod messages;
 pub mod money;
 pub mod profile;
 pub mod settings;
+pub mod trade_builder;
 pub mod trades;
 
 use std::collections::HashMap;
@@ -814,6 +815,7 @@ pub fn chrome(app: &mut App, cx: &Ctx, ctx: &egui::Context) {
     if app.pending_write.is_none() {
         messages::compose_window(app, ctx);
         inventory::resale_window(app, cx, ctx);
+        trade_builder::window(app, cx, ctx);
     }
     confirm_dialog(app, ctx);
 

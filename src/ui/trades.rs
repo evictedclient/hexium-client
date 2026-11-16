@@ -271,6 +271,13 @@ fn detail_body(
                             get: TradeSide::from(get),
                         });
                     }
+                    if ui.button("Counter…").clicked() {
+                        let partner_id = get.user_id;
+                        let partner = get.user_name.clone();
+                        let give_ids = give.assets.iter().map(|asset| asset.user_asset_id).collect();
+                        let get_ids = get.assets.iter().map(|asset| asset.user_asset_id).collect();
+                        app.open_trade_builder(partner_id, &partner, Some(detail.id), give_ids, get_ids);
+                    }
                     muted(ui, "You confirm on the next step.");
                 });
             }
