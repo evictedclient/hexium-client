@@ -172,6 +172,17 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
                     });
                     if detail.limited {
                         ui.add_space(8.0);
+                        ui::eyebrow(ui, "Price history");
+                        match app.catalog.resale.clone() {
+                            Load::Ready(data) if data.asset_id == detail.id => {
+                                ui::chart::summary(ui, &data);
+                                ui.add_space(4.0);
+                                ui::chart::show(ui, &data);
+                            }
+                            Load::Err(error) => failed(ui, &format!("Could not load the price history: {error}")),
+                            _ => waiting(ui, "price history"),
+                        }
+                        ui.add_space(8.0);
                         resellers(app, cx, ui, detail.id);
                     }
                 }

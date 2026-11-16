@@ -143,6 +143,8 @@ pub enum Msg {
     GameLaunched(u64, Res<String>),
     /// A page of resellers: (asset, whether it continues a list, result).
     Resellers(u64, bool, Res<models::ResellersPage>),
+    /// RAP and sales history of a limited.
+    ResaleData(u64, Res<models::ResaleData>),
     /// Join friend finished: the friend, and the client year or why not.
     FriendJoined(u64, Res<String>),
     /// A page of servers: (place, first index asked for, result).
@@ -608,6 +610,8 @@ pub struct CatalogState {
     pub favourite: Load<bool>,
     /// Resellers of the limited in the details window.
     pub resellers: Load<models::ResellersPage>,
+    /// Its RAP and sales history.
+    pub resale: Load<models::ResaleData>,
     pub resellers_more: bool,
 }
 
@@ -1064,12 +1068,22 @@ impl App {
         });
     }
 
+    pub fn load_resale_data(&mut self, asset: u64) {
+        self.catalog.resale = Load::Busy;
+        let cx = self.cx();
+        let api = cx.api.clone();
+        cx.spawn(async move {
+            Msg::ResaleData(asset, endpoints::resale_data(&api, asset).await.map_err(|error| error.to_string()))
+        });
+    }
+
     pub fn load_catalog_detail(&mut self, id: u64) {
         if !self.catalog.detail.is_idle() {
             return;
         }
         self.catalog.detail = Load::Busy;
         self.catalog.resellers = Load::Idle;
+        self.catalog.resale = Load::Idle;
         self.load_favourite_state(id);
         let cx = self.cx();
         let api = cx.api.clone();
@@ -2672,6 +2686,12 @@ impl App {
                 self.catalog.detail = into_load(result);
                 if let Some(asset) = limited {
                     self.load_resellers(asset, None);
+                    self.load_resale_data(asset);
+                }
+            }
+            Msg::ResaleData(asset, result) => {
+                if self.catalog.selected.as_ref().map(|item| item.id) == Some(asset) {
+                    self.catalog.resale = into_load(result);
                 }
             }
             Msg::Resellers(asset, more, result) => {

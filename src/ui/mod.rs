@@ -7,6 +7,7 @@
 
 pub mod avatar;
 pub mod catalog;
+pub mod chart;
 pub mod chat;
 pub mod friends;
 pub mod games;

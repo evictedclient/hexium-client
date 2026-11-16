@@ -1409,3 +1409,110 @@ mod reseller_tests {
         assert_eq!(items[1].seller_name, "A");
     }
 }
+
+// ---------------------------------------------------------------------------
+// Resale history of a limited (`economy/v1/assets/{id}/resale-data`)
+// ---------------------------------------------------------------------------
+
+/// Days since 1970-01-01 for an ISO date (`2026-07-27T05:00:00Z`).
+pub fn day_number(date: &str) -> Option<i64> {
+    let mut parts = date.get(..10)?.split('-');
+    let year: i64 = parts.next()?.parse().ok()?;
+    let month: i64 = parts.next()?.parse().ok()?;
+    let day: i64 = parts.next()?.parse().ok()?;
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    // Howard Hinnant's days_from_civil.
+    let year = if month <= 2 { year - 1 } else { year };
+    let era = year.div_euclid(400);
+    let yoe = year - era * 400;
+    let month_index = if month > 2 { month - 3 } else { month + 9 };
+    let doy = (153 * month_index + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    Some(era * 146_097 + doe - 719_468)
+}
+
+/// One day with sales: its average sale price and how many sold.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct ResalePoint {
+    pub day: i64,
+    pub price: u64,
+    pub volume: u64,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ResaleData {
+    pub asset_id: u64,
+    pub rap: u64,
+    pub sales: u64,
+    pub stock: u64,
+    pub total_copies: u64,
+    pub remaining: u64,
+    /// Oldest first.
+    pub points: Vec<ResalePoint>,
+}
+
+impl ResaleData {
+    pub fn from_value(asset_id: u64, value: &Value) -> Self {
+        let mut points: Vec<ResalePoint> = Vec::new();
+        for (key, is_price) in [("priceDataPoints", true), ("volumeDataPoints", false)] {
+            for entry in arr_at(value, key) {
+                let Some(day) = day_number(&str_at(entry, "date")) else { continue };
+                let amount = num_at(entry, "value");
+                let point = match points.iter_mut().find(|point| point.day == day) {
+                    Some(point) => point,
+                    None => {
+                        points.push(ResalePoint { day, ..Default::default() });
+                        points.last_mut().expect("just pushed")
+                    }
+                };
+                if is_price {
+                    point.price = amount;
+                } else {
+                    point.volume = amount;
+                }
+            }
+        }
+        points.sort_by_key(|point| point.day);
+        Self {
+            asset_id,
+            rap: num_at(value, "recentAveragePrice"),
+            sales: num_at(value, "sales"),
+            stock: num_at(value, "assetStock"),
+            total_copies: num_at(value, "totalCopies"),
+            remaining: num_at(value, "numberRemaining"),
+            points,
+        }
+    }
+}
+
+#[cfg(test)]
+mod resale_tests {
+    use super::*;
+
+    #[test]
+    fn day_numbers() {
+        assert_eq!(day_number("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(day_number("2000-03-01"), Some(11_017));
+        assert_eq!(day_number("2026-11-16T05:00:00Z"), Some(20_773));
+        assert_eq!(day_number("junk"), None);
+    }
+
+    /// The live shape (values made up), with the two series merged by day.
+    #[test]
+    fn merges_price_and_volume_by_day() {
+        let value: Value = serde_json::from_str(
+            r#"{"assetStock":300,"sales":300,"numberRemaining":0,"recentAveragePrice":439,"totalCopies":300,
+                "priceDataPoints":[{"value":500,"date":"2026-07-28T05:00:00Z"},{"value":400,"date":"2026-07-27T05:00:00Z"}],
+                "volumeDataPoints":[{"value":2,"date":"2026-07-27T05:00:00Z"},{"value":5,"date":"2026-07-28T05:00:00Z"}]}"#,
+        )
+        .unwrap();
+        let data = ResaleData::from_value(9, &value);
+        assert_eq!((data.rap, data.sales, data.total_copies), (439, 300, 300));
+        assert_eq!(data.points.len(), 2);
+        assert_eq!((data.points[0].price, data.points[0].volume), (400, 2));
+        assert_eq!((data.points[1].price, data.points[1].volume), (500, 5));
+        assert!(data.points[0].day < data.points[1].day);
+    }
+}

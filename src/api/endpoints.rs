@@ -1532,3 +1532,11 @@ pub async fn resellers(client: &ApiClient, asset: u64, cursor: Option<&str>) -> 
             .map(str::to_string),
     })
 }
+
+/// RAP, sales and the per-day price and volume history of a limited.
+pub async fn resale_data(client: &ApiClient, asset: u64) -> Result<ResaleData> {
+    let value = client
+        .get(&api("economy", &format!("/v1/assets/{asset}/resale-data")))
+        .await?;
+    Ok(ResaleData::from_value(asset, &value))
+}

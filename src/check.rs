@@ -818,6 +818,32 @@ async fn run_all(client: &ApiClient) -> Vec<Row> {
         };
         rows.push(Row { name: "economy/v1/assets/{id}/resellers", detail, verdict, ms: started.elapsed().as_millis() });
     }
+    {
+        let started = Instant::now();
+        let first = endpoints::collectibles(client, me).await.ok().and_then(|items| items.first().map(|item| item.id));
+        let (verdict, detail) = match first {
+            Some(asset) => match endpoints::resale_data(client, asset).await {
+                Ok(data) if data.points.is_empty() => (Verdict::Warn, format!("RAP {} · no history points", data.rap)),
+                Ok(data) => {
+                    let span = match (data.points.first(), data.points.last()) {
+                        (Some(first), Some(last)) => format!(
+                            "{} to {}",
+                            crate::ui::chart::short_date(first.day),
+                            crate::ui::chart::short_date(last.day)
+                        ),
+                        _ => String::new(),
+                    };
+                    (
+                        Verdict::Pass,
+                        format!("RAP {} · {} sales · {} day(s) of history, {span}", data.rap, data.sales, data.points.len()),
+                    )
+                }
+                Err(error) => (Verdict::Fail, error.to_string()),
+            },
+            None => (Verdict::Warn, "skipped · you own no collectibles to look up".to_string()),
+        };
+        rows.push(Row { name: "economy/v1/assets/{id}/resale-data", detail, verdict, ms: started.elapsed().as_millis() });
+    }
     rows.push(match crate::play::launcher_registered() {
         Some(command) => Row {
             name: "hexium:// launcher",
