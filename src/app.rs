@@ -119,6 +119,7 @@ pub enum Msg {
     FollowState(u64, Res<bool>),
     FriendshipState(u64, Res<String>),
     FriendRequests(Res<models::FriendRequestsBundle>),
+    Resale(u64, Res<models::ResaleInfo>),
     FavouriteState(u64, Res<bool>),
     WriteDone(WriteAction, Res<()>),
 }
@@ -135,6 +136,18 @@ pub enum WriteAction {
     AcceptFriend { user_id: u64, name: String },
     DeclineFriend { user_id: u64, name: String },
     Unfriend { user_id: u64, name: String },
+    /// List a copy for sale (`old` None), change its price, or take it off sale
+    /// (`new` None).
+    SetResalePrice {
+        asset_id: u64,
+        user_asset_id: u64,
+        name: String,
+        serial: Option<u64>,
+        rap: u64,
+        lowest_other: Option<u64>,
+        old: Option<u64>,
+        new: Option<u64>,
+    },
     AnswerTrade {
         trade_id: u64,
         partner: String,
@@ -166,6 +179,9 @@ impl WriteAction {
             WriteAction::AcceptFriend { .. } => "Accept friend request".to_string(),
             WriteAction::DeclineFriend { .. } => "Decline friend request".to_string(),
             WriteAction::Unfriend { .. } => "Unfriend".to_string(),
+            WriteAction::SetResalePrice { new: None, .. } => "Take off sale".to_string(),
+            WriteAction::SetResalePrice { old: None, .. } => "List for sale".to_string(),
+            WriteAction::SetResalePrice { .. } => "Change price".to_string(),
             WriteAction::AnswerTrade { accept: true, .. } => "Accept trade".to_string(),
             WriteAction::AnswerTrade { accept: false, .. } => "Decline trade".to_string(),
             WriteAction::SendMessage { reply_to: Some(_), .. } => "Send reply".to_string(),
@@ -211,6 +227,9 @@ impl WriteAction {
             WriteAction::Unfriend { name, .. } => format!(
                 "{name} will be removed from your friends. Undoing this takes a new request that they have to accept."
             ),
+            WriteAction::SetResalePrice { name, serial, rap, lowest_other, old, new, .. } => {
+                resale_summary(name, *serial, *rap, *lowest_other, *old, *new)
+            }
             WriteAction::AnswerTrade { partner, accept, give, get, .. } => {
                 trade_summary(partner, *accept, give, get)
             }
@@ -242,6 +261,9 @@ impl WriteAction {
             WriteAction::AcceptFriend { .. } => "Accept",
             WriteAction::DeclineFriend { .. } => "Decline",
             WriteAction::Unfriend { .. } => "Unfriend",
+            WriteAction::SetResalePrice { new: None, .. } => "Take off sale",
+            WriteAction::SetResalePrice { old: None, .. } => "List for sale",
+            WriteAction::SetResalePrice { .. } => "Change price",
             WriteAction::AnswerTrade { accept: true, .. } => "Accept trade",
             WriteAction::AnswerTrade { accept: false, .. } => "Decline trade",
             WriteAction::SendMessage { .. } => "Send",
@@ -307,6 +329,46 @@ fn trade_summary(partner: &str, accept: bool, give: &TradeSide, get: &TradeSide)
         }
         std::cmp::Ordering::Equal => "Both sides are worth the same RAP.".to_string(),
     });
+    out
+}
+
+/// What listing, repricing or delisting a copy will do, with the numbers that
+/// matter for the decision.
+fn resale_summary(
+    name: &str,
+    serial: Option<u64>,
+    rap: u64,
+    lowest_other: Option<u64>,
+    old: Option<u64>,
+    new: Option<u64>,
+) -> String {
+    let item = match serial {
+        Some(serial) => format!("\"{name}\" #{serial}"),
+        None => format!("\"{name}\""),
+    };
+    let r = |value: u64| format!("{} R$", group_digits(value));
+    let mut out = match (old, new) {
+        (_, None) => {
+            return format!("{item} comes off sale. Nobody can buy it until you list it again.");
+        }
+        (None, Some(price)) => format!("{item} goes on sale for {}.", r(price)),
+        (Some(old), Some(price)) => format!("{item}'s price changes from {} to {}.", r(old), r(price)),
+    };
+    let price = new.unwrap_or(0);
+    out.push_str(" Anyone can buy it at that price straight away, and it leaves your inventory when they do.\n\n");
+    out.push_str(&format!("RAP: {}", r(rap)));
+    if rap > 0 && price < rap {
+        let below = (rap - price) * 100 / rap;
+        out.push_str(&format!(" (your price is {below}% below it)"));
+    }
+    out.push('\n');
+    match lowest_other {
+        Some(lowest) if price > lowest => {
+            out.push_str(&format!("Cheapest on sale now: {} (yours would cost more)", r(lowest)))
+        }
+        Some(lowest) => out.push_str(&format!("Cheapest on sale now: {}", r(lowest))),
+        None => out.push_str("Nobody else is selling one right now."),
+    }
     out
 }
 
@@ -397,6 +459,21 @@ pub struct GroupsState {
 #[derive(Default)]
 pub struct InventoryState {
     pub data: Load<models::InventoryBundle>,
+    /// The Sell window, when open.
+    pub resale: Option<ResaleState>,
+}
+
+/// One collectible copy in the Sell window.
+pub struct ResaleState {
+    pub asset_id: u64,
+    pub user_asset_id: u64,
+    pub name: String,
+    pub serial: Option<u64>,
+    pub rap: u64,
+    pub icon: Option<String>,
+    pub info: Load<models::ResaleInfo>,
+    /// What is typed in the price box.
+    pub price_input: String,
 }
 
 #[derive(Default)]
@@ -1097,6 +1174,9 @@ impl App {
                 WriteAction::Unfriend { user_id, .. } => {
                     endpoints::friendship_write(&api, *user_id, "unfriend").await
                 }
+                WriteAction::SetResalePrice { asset_id, user_asset_id, new, .. } => {
+                    endpoints::set_resale_price(&api, *asset_id, *user_asset_id, new.unwrap_or(0)).await
+                }
                 WriteAction::AnswerTrade { trade_id, accept, .. } => {
                     endpoints::answer_trade(&api, *trade_id, *accept).await
                 }
@@ -1208,6 +1288,25 @@ impl App {
                 self.friends.data = Load::Idle;
                 format!("{name} is no longer your friend.")
             }
+            WriteAction::SetResalePrice { user_asset_id, name, old, new, .. } => {
+                if let Some(resale) = self.inventory.resale.as_mut() {
+                    if resale.user_asset_id == *user_asset_id {
+                        if let Load::Ready(info) = &mut resale.info {
+                            info.my_price = *new;
+                        }
+                        resale.price_input = new.map(|price| price.to_string()).unwrap_or_default();
+                    }
+                }
+                match (old, new) {
+                    (_, None) => format!("\"{name}\" is off sale."),
+                    (None, Some(price)) => {
+                        format!("\"{name}\" is listed for {} R$.", crate::ui::money(*price as i64))
+                    }
+                    (Some(_), Some(price)) => {
+                        format!("\"{name}\" now costs {} R$.", crate::ui::money(*price as i64))
+                    }
+                }
+            }
             WriteAction::AnswerTrade { trade_id, partner, accept, .. } => {
                 // It is no longer open, so it leaves the list and the window closes.
                 if let Load::Ready(page) = &mut self.trades.data {
@@ -1288,6 +1387,32 @@ impl App {
         self.compose
             .as_ref()
             .is_some_and(|draft| !draft.body.trim().is_empty())
+    }
+
+    /// Opens the Sell window for one collectible copy and loads its market.
+    pub fn open_resale(&mut self, item: &models::Collectible, icon: Option<String>) {
+        let Some(me) = self.me_id() else { return };
+        self.inventory.resale = Some(ResaleState {
+            asset_id: item.id,
+            user_asset_id: item.user_asset_id,
+            name: item.name.clone(),
+            serial: item.serial,
+            rap: item.rap,
+            icon,
+            info: Load::Busy,
+            price_input: String::new(),
+        });
+        let (asset, copy) = (item.id, item.user_asset_id);
+        let cx = self.cx();
+        let api = cx.api.clone();
+        cx.spawn(async move {
+            Msg::Resale(
+                copy,
+                endpoints::resale_info(&api, me, asset, copy)
+                    .await
+                    .map_err(|error| error.to_string()),
+            )
+        });
     }
 
     pub fn probe(&mut self) {
@@ -1501,6 +1626,19 @@ impl App {
             Msg::Groups(result) => self.groups.data = into_load(result),
             Msg::GroupDetail(result) => self.groups.detail = into_load(result),
             Msg::Inventory(result) => self.inventory.data = into_load(result),
+            Msg::Resale(user_asset_id, result) => {
+                if let Some(resale) = self.inventory.resale.as_mut() {
+                    if resale.user_asset_id == user_asset_id {
+                        if let Ok(info) = &result {
+                            if resale.price_input.is_empty() {
+                                resale.price_input =
+                                    info.my_price.map(|price| price.to_string()).unwrap_or_default();
+                            }
+                        }
+                        resale.info = into_load(result);
+                    }
+                }
+            }
             Msg::Transactions(result) => self.money.data = into_load(result),
             Msg::TransactionsMore(result) => {
                 self.money.loading_more = false;
@@ -1692,6 +1830,24 @@ mod tests {
         assert!(text.contains("You get (RAP 16,500)"));
         assert!(text.contains("· plus 250 R$"));
         assert!(text.ends_with("You get 5,058 RAP more than you give."));
+    }
+
+    #[test]
+    fn resale_summary_warns_below_rap() {
+        let text = resale_summary("Beast Mode", Some(108), 1_000, Some(900), None, Some(500));
+        println!("{text}");
+        assert!(text.starts_with("\"Beast Mode\" #108 goes on sale for 500 R$."));
+        assert!(text.contains("RAP: 1,000 R$ (your price is 50% below it)"));
+        assert!(text.ends_with("Cheapest on sale now: 900 R$"));
+    }
+
+    #[test]
+    fn resale_summary_change_and_remove() {
+        let change = resale_summary("DJ Money", None, 200, Some(150), Some(300), Some(250));
+        assert!(change.starts_with("\"DJ Money\"'s price changes from 300 R$ to 250 R$."));
+        assert!(change.ends_with("(yours would cost more)"));
+        let remove = resale_summary("DJ Money", None, 200, None, Some(250), None);
+        assert!(remove.contains("comes off sale"));
     }
 
     #[test]

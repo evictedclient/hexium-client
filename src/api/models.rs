@@ -566,9 +566,13 @@ impl AvatarData {
 #[derive(Debug, Clone, Default)]
 pub struct Collectible {
     pub id: u64,
+    /// This copy. Resale prices are set per copy, not per item.
+    pub user_asset_id: u64,
     pub name: String,
     pub asset_type: String,
     pub serial: Option<u64>,
+    /// Recent average price.
+    pub rap: u64,
 }
 
 impl Collectible {
@@ -577,9 +581,24 @@ impl Collectible {
             id: opt_num_at(value, "assetId")
                 .or_else(|| opt_num_at(value, "id"))
                 .unwrap_or(0),
+            user_asset_id: num_at(value, "userAssetId"),
             name: str_at(value, "name"),
-            asset_type: asset_type_of(value),
+            // Despite its name, the collectibles list's `assetTypeId` holds the type
+            // name ("Hat", "HairAccessory"); a number is mapped just in case.
+            asset_type: {
+                let named = asset_type_of(value);
+                if !named.is_empty() {
+                    named
+                } else {
+                    let raw = str_at(value, "assetTypeId");
+                    match raw.parse::<u64>() {
+                        Ok(id) => asset_type_name(id).map(str::to_string).unwrap_or_default(),
+                        Err(_) => spaced_words(&raw),
+                    }
+                }
+            },
             serial: opt_num_at(value, "serialNumber"),
+            rap: num_at(value, "recentAveragePrice"),
         }
     }
 }
@@ -921,4 +940,29 @@ impl FriendRequest {
 pub struct FriendRequestsBundle {
     pub items: Vec<FriendRequest>,
     pub icons: HashMap<u64, String>,
+}
+
+/// What the Sell window needs about one copy of a collectible.
+#[derive(Debug, Clone, Default)]
+pub struct ResaleInfo {
+    /// Your asking price for this copy; `None` when it is not on sale.
+    pub my_price: Option<u64>,
+    /// Cheapest copy someone else is selling, if any.
+    pub lowest_other: Option<u64>,
+    /// How many other copies are on sale.
+    pub other_sellers: usize,
+    pub sales: u64,
+    pub rap: u64,
+}
+
+/// `HairAccessory` -> `Hair Accessory`.
+pub fn spaced_words(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 4);
+    for (index, character) in text.chars().enumerate() {
+        if index > 0 && character.is_ascii_uppercase() {
+            out.push(' ');
+        }
+        out.push(character);
+    }
+    out
 }

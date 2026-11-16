@@ -18,7 +18,8 @@ Not affiliated with hexium.wtf or Roblox.
   follow / unfollow, favourite / unfavourite, set your status, mark messages read or
   unread, send / accept / decline friend requests, unfriend, send private messages
   and replies, accept / decline inbound trades (the dialog lists both sides and
-  their RAP totals).
+  their RAP totals), list a collectible for sale, change its price or take it off
+  sale (with its RAP and the cheapest other listing).
 - **Make it yours**: pick an accent colour and background in Settings.
 
 Purchases are deliberately not supported: the site's buy flow includes an anti-bot

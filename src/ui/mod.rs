@@ -813,6 +813,7 @@ pub fn chrome(app: &mut App, cx: &Ctx, ctx: &egui::Context) {
     // Hidden while a confirmation is up, so the dialog is never behind it.
     if app.pending_write.is_none() {
         messages::compose_window(app, ctx);
+        inventory::resale_window(app, cx, ctx);
     }
     confirm_dialog(app, ctx);
 

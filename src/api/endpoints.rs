@@ -996,3 +996,61 @@ pub async fn answer_trade(client: &ApiClient, id: u64, accept: bool) -> Result<(
         .await?;
     Ok(())
 }
+
+/// Your listing for one copy, the cheapest other listing, and the item's sales.
+/// Uses `getResellableCopies`, `getAssetResellers` and `getResaleData` from
+/// `api-economy.js`. A price of 0 means the copy is not for sale.
+pub async fn resale_info(client: &ApiClient, me: u64, asset: u64, user_asset_id: u64) -> Result<ResaleInfo> {
+    let copies_path = api("economy", &format!("/v1/assets/{asset}/users/{me}/resellable-copies"));
+    let resellers_path = api("economy", &format!("/v1/assets/{asset}/resellers"));
+    let resellers_query = [("limit", "100".to_string()), ("cursor", String::new())];
+    let data_path = api("economy", &format!("/v1/assets/{asset}/resale-data"));
+    let (copies, resellers, data) = tokio::join!(
+        client.get(&copies_path),
+        client.get_query(&resellers_path, &resellers_query),
+        client.get(&data_path),
+    );
+    let copies = copies?;
+    let my_price = first_array(&copies, &["data"])
+        .iter()
+        .find(|copy| num_at(copy, "userAssetId") == user_asset_id)
+        .map(|copy| num_at(copy, "price"))
+        .filter(|price| *price > 0);
+
+    let mut lowest_other = None;
+    let mut other_sellers = 0;
+    if let Ok(resellers) = &resellers {
+        for listing in first_array(resellers, &["data"]) {
+            let seller = listing.get("seller").map(|seller| num_at(seller, "id")).unwrap_or(0);
+            let price = num_at(listing, "price");
+            if seller == me || price == 0 {
+                continue;
+            }
+            other_sellers += 1;
+            lowest_other = Some(lowest_other.map_or(price, |lowest: u64| lowest.min(price)));
+        }
+    }
+    let (sales, rap) = match &data {
+        Ok(data) => (num_at(data, "sales"), num_at(data, "recentAveragePrice")),
+        Err(_) => (0, 0),
+    };
+    Ok(ResaleInfo {
+        my_price,
+        lowest_other,
+        other_sellers,
+        sales,
+        rap,
+    })
+}
+
+/// `api-economy.js` `setResalePrice` / `removeResaleListing`: PATCH with
+/// `{ price }`, where 0 takes the copy off sale.
+pub async fn set_resale_price(client: &ApiClient, asset: u64, user_asset_id: u64, price: u64) -> Result<()> {
+    client
+        .patch(
+            &api("economy", &format!("/v1/assets/{asset}/resellable-copies/{user_asset_id}")),
+            Some(json!({ "price": price })),
+        )
+        .await?;
+    Ok(())
+}
