@@ -25,6 +25,9 @@ pub struct Config {
     /// Tell the other person in a chat when you are typing, as the site does.
     #[serde(default = "default_true")]
     pub share_typing: bool,
+    /// Windows notifications for chat messages you are not looking at.
+    #[serde(default = "default_true")]
+    pub chat_notifications: bool,
 }
 
 fn default_true() -> bool {
@@ -61,6 +64,7 @@ impl Default for Config {
             window_width: default_width(),
             window_height: default_height(),
             share_typing: true,
+            chat_notifications: true,
         }
     }
 }

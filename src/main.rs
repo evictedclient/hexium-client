@@ -4,6 +4,7 @@ mod api;
 mod app;
 mod check;
 mod config;
+mod notify;
 mod ui;
 
 use std::sync::Arc;

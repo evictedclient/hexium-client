@@ -17,6 +17,8 @@ Not affiliated with hexium.wtf or Roblox.
   chat: your conversations and friends to start one with, with new messages and typing
   arriving live over the site's SignalR hub (`/chat`), falling back to polling when the
   hub is down.
+  New chat messages that arrive while the client is in the background, or while you
+  are on another screen or chat, show as Windows notifications (switchable in Settings).
 - **Writes**, each behind a confirmation dialog that says exactly what will change:
   follow / unfollow, favourite / unfavourite, set your status and description, vote on games, mark messages read or
   unread (or all at once), archive / unarchive messages, send / accept / decline friend requests, unfriend, send private messages

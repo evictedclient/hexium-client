@@ -113,6 +113,14 @@ pub fn show(app: &mut App, _cx: &Ctx, ui: &mut Ui) {
             }
         }
         muted(ui, "While on, the other person sees a typing indicator as you write, the same as on the site.");
+        ui.add_space(6.0);
+        if ui
+            .checkbox(&mut app.cfg.chat_notifications, "Desktop notifications for new chat messages")
+            .changed()
+        {
+            app.cfg.save();
+        }
+        muted(ui, "Shown when a message arrives while the client is in the background or you are on another screen or chat. Needs the live connection.");
     });
 
 

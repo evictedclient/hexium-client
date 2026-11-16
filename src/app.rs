@@ -749,6 +749,7 @@ pub struct App {
     pub trades: TradesState,
     pub chat: ChatState,
     hub: Option<HubHandle>,
+    notify_gate: crate::notify::SharedGate,
     refreshed_at: Instant,
     last_resize_check: Instant,
 }
@@ -797,6 +798,7 @@ impl App {
             trades: TradesState::default(),
             chat: ChatState::default(),
             hub: None,
+            notify_gate: Default::default(),
             refreshed_at: Instant::now(),
             last_resize_check: Instant::now(),
         };
@@ -1340,7 +1342,19 @@ impl App {
         }
         let tx = self.tx.clone();
         let egui = self.egui.clone();
+        let gate = self.notify_gate.clone();
+        let rt = self.rt.clone();
         self.hub = Some(hub::spawn(&self.rt, self.api.clone(), move |event| {
+            // Decided here rather than in the UI loop, which may be asleep while
+            // the window is minimised.
+            if let HubEvent::Message { conversation_id, user_id, content, .. } = &event {
+                let toast = gate.lock().ok().and_then(|mut gate| {
+                    crate::notify::decide(&mut gate, *conversation_id, *user_id, content, Instant::now())
+                });
+                if let Some((title, body)) = toast {
+                    crate::notify::show(&rt, title, body);
+                }
+            }
             if tx.send(Msg::Hub(event)).is_ok() {
                 egui.request_repaint();
             }
@@ -1526,6 +1540,20 @@ impl App {
                     self.refresh_chat_list(me);
                 }
             }
+        }
+    }
+
+    /// Keeps what the hub thread needs to decide on a toast current.
+    fn sync_notify_gate(&mut self, ctx: &egui::Context) {
+        let focused = ctx.input(|input| input.viewport().focused.unwrap_or(true));
+        let minimized = ctx.input(|input| input.viewport().minimized.unwrap_or(false));
+        let watching = if self.view == View::Chat { self.chat.open_conversation() } else { None };
+        let me = self.me_id().unwrap_or(0);
+        if let Ok(mut gate) = self.notify_gate.lock() {
+            gate.enabled = self.cfg.chat_notifications;
+            gate.me = me;
+            gate.focused = focused && !minimized;
+            gate.watching = watching;
         }
     }
 
@@ -2222,6 +2250,9 @@ impl App {
 
     pub fn sign_out(&mut self) {
         self.stop_hub();
+        if let Ok(mut gate) = self.notify_gate.lock() {
+            *gate = crate::notify::Gate::default();
+        }
         self.api.set_session(None);
         self.cfg.session_cookie = None;
         self.cfg.save();
@@ -2467,6 +2498,22 @@ impl App {
             Msg::WriteDone(action, result) => self.finish_write(action, result),
             Msg::ChatList(result) => match result {
                 Ok(bundle) => {
+                    if let Ok(mut gate) = self.notify_gate.lock() {
+                        let me = self.session.ready().map(|session| session.user.id).unwrap_or(0);
+                        for conversation in &bundle.conversations {
+                            for participant in &conversation.participants {
+                                if !participant.name.is_empty() {
+                                    gate.names.insert(participant.id, participant.name.clone());
+                                }
+                            }
+                            if conversation.participants.len() > 2 {
+                                gate.groups.insert(conversation.id, conversation.label(me));
+                            }
+                        }
+                        for friend in &bundle.friends {
+                            gate.names.entry(friend.id).or_insert_with(|| friend.name.clone());
+                        }
+                    }
                     self.chat.list = Load::Ready(bundle);
                     if let Some(id) = self.chat.open_conversation() {
                         if self.view == View::Chat {
@@ -2549,6 +2596,8 @@ impl eframe::App for App {
         while let Ok(message) = self.rx.try_recv() {
             self.apply(message);
         }
+
+        self.sync_notify_gate(ctx);
 
         let wanted = format!("{}/{}", self.cfg.theme, self.cfg.accent);
         if self.applied_theme != wanted {
