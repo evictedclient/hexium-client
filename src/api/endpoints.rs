@@ -1227,3 +1227,129 @@ pub async fn send_trade(
     client.post(&path, Some(body)).await?;
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Chat (`chat/v2`, as used by `app-shell-chat-signalr.js`)
+// ---------------------------------------------------------------------------
+
+/// Conversations, friends without one, headshots and the chat switch.
+pub async fn chat_bundle(client: &ApiClient, me: u64) -> Result<ChatBundle> {
+    let query = [("pageNumber", "1".to_string()), ("pageSize", "100".to_string())];
+    let conversations_path = api("chat", "/v2/get-user-conversations");
+    let settings_path = api("chat", "/v2/chat-settings");
+    let (conversations, settings, friend_list) = tokio::join!(
+        client.get_query(&conversations_path, &query),
+        client.get(&settings_path),
+        friends(client, me),
+    );
+    let conversations: Vec<ChatConversation> =
+        first_array(&conversations?, &["data", "conversations"])
+            .iter()
+            .map(ChatConversation::from_value)
+            .filter(|conversation| conversation.id != 0)
+            .collect();
+    // Default to enabled when the settings call fails: the list still loaded.
+    let chat_enabled = settings
+        .ok()
+        .and_then(|value| value.get("chatEnabled").and_then(Value::as_bool))
+        .unwrap_or(true);
+
+    let talking_to: Vec<u64> = conversations
+        .iter()
+        .filter(|conversation| {
+            conversation.kind.is_empty() || conversation.kind == "OneToOneConversation"
+        })
+        .filter_map(|conversation| conversation.other(me).map(|other| other.id))
+        .collect();
+    let friend_list: Vec<Friend> = friend_list
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|friend| !talking_to.contains(&friend.id))
+        .collect();
+
+    let mut ids: Vec<u64> = conversations
+        .iter()
+        .flat_map(|conversation| conversation.participants.iter().map(|participant| participant.id))
+        .chain(friend_list.iter().map(|friend| friend.id))
+        .filter(|id| *id != 0 && *id != me)
+        .collect();
+    ids.sort_unstable();
+    ids.dedup();
+    let icons = headshots(client, &ids).await.unwrap_or_default();
+    Ok(ChatBundle {
+        conversations,
+        friends: friend_list,
+        icons,
+        chat_enabled,
+    })
+}
+
+/// The newest 100 messages of a conversation, oldest first.
+pub async fn chat_messages(client: &ApiClient, conversation: u64) -> Result<Vec<ChatMessage>> {
+    let query = [
+        ("conversationId", conversation.to_string()),
+        ("pageSize", "100".to_string()),
+        ("exclusiveStartMessageId", String::new()),
+    ];
+    let path = api("chat", "/v2/get-messages");
+    let value = client.get_query(&path, &query).await?;
+    let mut messages: Vec<ChatMessage> = first_array(&value, &["data", "messages"])
+        .iter()
+        .map(ChatMessage::from_value)
+        .collect();
+    // The site's list is newest first.
+    messages.reverse();
+    Ok(messages)
+}
+
+/// `mark-as-read`, which the site itself sends whenever a conversation is open.
+/// It only changes read state, so it is not treated as a confirmed write.
+pub async fn chat_mark_read(client: &ApiClient, conversation: u64, end_message: &str) -> Result<()> {
+    let end: Value = end_message
+        .parse::<u64>()
+        .map(Value::from)
+        .unwrap_or_else(|_| Value::from(end_message));
+    client
+        .post(
+            &api("chat", "/v2/mark-as-read"),
+            Some(json!({ "conversationId": conversation, "endMessageId": end })),
+        )
+        .await?;
+    Ok(())
+}
+
+/// `start-one-to-one-conversation`: returns the conversation (new or existing).
+pub async fn chat_start(client: &ApiClient, user: u64) -> Result<ChatConversation> {
+    let value = client
+        .post(
+            &api("chat", "/v2/start-one-to-one-conversation"),
+            Some(json!({ "participantUserId": user })),
+        )
+        .await?;
+    let conversation = ChatConversation::from_value(value.get("conversation").unwrap_or(&value));
+    if conversation.id == 0 {
+        let reason = optional_text_any(&value, &["statusMessage", "resultType", "message"])
+            .unwrap_or_else(|| "the site did not return a conversation".to_string());
+        return Err(super::ApiError::Rejected(200, reason));
+    }
+    Ok(conversation)
+}
+
+/// `send-message`. A 200 whose `resultType` is not `Success` (moderated, flood
+/// checked, …) is a failure.
+pub async fn chat_send(client: &ApiClient, conversation: u64, text: &str) -> Result<ChatMessage> {
+    let value = client
+        .post(
+            &api("chat", "/v2/send-message"),
+            Some(json!({ "conversationId": conversation, "message": text })),
+        )
+        .await?;
+    if let Some(result) = value.get("resultType").and_then(Value::as_str) {
+        if !result.eq_ignore_ascii_case("success") {
+            let reason =
+                optional_text_any(&value, &["statusMessage"]).unwrap_or_else(|| result.to_string());
+            return Err(super::ApiError::Rejected(200, reason));
+        }
+    }
+    Ok(ChatMessage::from_value(&value))
+}

@@ -987,3 +987,132 @@ pub struct TradeInventory {
     /// Asset id -> thumbnail.
     pub icons: HashMap<u64, String>,
 }
+
+// ---------------------------------------------------------------------------
+// Chat (`chat/v2`, shapes from the site's `app-shell-chat-signalr.js`)
+// ---------------------------------------------------------------------------
+
+/// Message ids may be numbers or strings; keep them as text.
+pub fn id_text(value: &Value, key: &str) -> String {
+    match value.get(key) {
+        Some(Value::String(text)) => text.clone(),
+        Some(Value::Number(number)) => number.to_string(),
+        _ => String::new(),
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ChatMessage {
+    pub id: String,
+    pub content: String,
+    /// ISO time as the site sends it.
+    pub sent: String,
+    pub sender_id: u64,
+    pub read: bool,
+}
+
+impl ChatMessage {
+    pub fn from_value(value: &Value) -> Self {
+        Self {
+            id: id_text(value, "id"),
+            content: value
+                .get("content")
+                .or_else(|| value.get("message"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            sent: str_at(value, "sent"),
+            sender_id: opt_num_at(value, "senderTargetId")
+                .or_else(|| opt_num_at(value, "senderUserId"))
+                .or_else(|| opt_num_at(value, "userId"))
+                .unwrap_or(0),
+            read: bool_at(value, "read"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ChatParticipant {
+    pub id: u64,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ChatConversation {
+    pub id: u64,
+    pub title: String,
+    /// `OneToOneConversation`, `MultiUserConversation`, …
+    pub kind: String,
+    pub participants: Vec<ChatParticipant>,
+    pub unread: bool,
+    pub latest: Option<ChatMessage>,
+}
+
+impl ChatConversation {
+    pub fn from_value(value: &Value) -> Self {
+        let participants = arr_at(value, "participants")
+            .iter()
+            .map(|participant| ChatParticipant {
+                id: opt_num_at(participant, "targetId")
+                    .or_else(|| opt_num_at(participant, "userId"))
+                    .unwrap_or(0),
+                name: participant
+                    .get("name")
+                    .or_else(|| participant.get("displayName"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+            })
+            .collect();
+        let latest = value
+            .get("latest")
+            .or_else(|| value.get("lastMessage"))
+            .filter(|latest| latest.is_object())
+            .map(ChatMessage::from_value);
+        Self {
+            id: num_at(value, "id"),
+            title: str_at(value, "title"),
+            kind: str_at(value, "conversationType"),
+            participants,
+            unread: bool_at(value, "hasUnreadMessages"),
+            latest,
+        }
+    }
+
+    /// The first participant who is not you.
+    pub fn other(&self, me: u64) -> Option<&ChatParticipant> {
+        self.participants
+            .iter()
+            .find(|participant| participant.id != me && participant.id != 0)
+    }
+
+    /// What to call the conversation in the list.
+    pub fn label(&self, me: u64) -> String {
+        if !self.title.trim().is_empty() {
+            return self.title.clone();
+        }
+        let names: Vec<&str> = self
+            .participants
+            .iter()
+            .filter(|participant| participant.id != me && !participant.name.is_empty())
+            .map(|participant| participant.name.as_str())
+            .collect();
+        if names.is_empty() {
+            format!("Conversation {}", self.id)
+        } else {
+            names.join(", ")
+        }
+    }
+}
+
+/// The Chat screen's list: conversations, friends you could start one with, and
+/// headshots for everyone in either.
+#[derive(Debug, Clone, Default)]
+pub struct ChatBundle {
+    pub conversations: Vec<ChatConversation>,
+    /// Friends who have no one-to-one conversation with you yet.
+    pub friends: Vec<Friend>,
+    pub icons: HashMap<u64, String>,
+    /// From `chat-settings`; `false` means the site has chat switched off for you.
+    pub chat_enabled: bool,
+}

@@ -7,6 +7,7 @@
 
 pub mod avatar;
 pub mod catalog;
+pub mod chat;
 pub mod friends;
 pub mod games;
 pub mod groups;
@@ -843,6 +844,7 @@ pub fn chrome(app: &mut App, cx: &Ctx, ctx: &egui::Context) {
                                 View::Inventory => inventory::show(app, cx, ui),
                                 View::Money => money::show(app, cx, ui),
                                 View::Messages => messages::show(app, cx, ui),
+                                View::Chat => chat::show(app, cx, ui),
                                 View::Trades => trades::show(app, cx, ui),
                                 View::Settings => settings::show(app, cx, ui),
                             }
@@ -962,9 +964,11 @@ fn balance_chip(ui: &mut Ui, unit: &str, value: &str, color: Color32) {
 /// API. Counts from the session show as badges.
 fn side_nav(app: &mut App, ctx: &egui::Context) {
     let counts = app.session.ready().map(|session| session.counts);
+    let chat_unread = app.chat.unread_count();
     let badge = |view: View| -> u64 {
         match (view, counts) {
             (View::Messages, Some(counts)) => counts.unread,
+            (View::Chat, _) => chat_unread,
             (View::Friends, Some(counts)) => counts.friend_requests,
             (View::Trades, Some(counts)) => counts.trades,
             _ => 0,
@@ -974,7 +978,7 @@ fn side_nav(app: &mut App, ctx: &egui::Context) {
         ("", &[View::Home]),
         ("You", &[View::Profile, View::Avatar, View::Inventory, View::Money]),
         ("Play", &[View::Games, View::Catalog]),
-        ("Social", &[View::Friends, View::Messages, View::Trades, View::Groups]),
+        ("Social", &[View::Friends, View::Chat, View::Messages, View::Trades, View::Groups]),
         ("App", &[View::Settings]),
     ];
 

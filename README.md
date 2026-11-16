@@ -13,11 +13,14 @@ Not affiliated with hexium.wtf or Roblox.
 - **Browse**: games, the catalog (with item details), groups.
 - **You**: profile, avatar (body colours from the site's palette), inventory and
   collectibles, money and transaction history.
-- **Social**: friends and friend requests, messages, trades with full trade details.
+- **Social**: friends and friend requests, messages, trades with full trade details, and
+  chat: your conversations and friends to start one with, with new messages and typing
+  arriving live over the site's SignalR hub (`/chat`), falling back to polling when the
+  hub is down.
 - **Writes**, each behind a confirmation dialog that says exactly what will change:
   follow / unfollow, favourite / unfavourite, set your status and description, vote on games, mark messages read or
   unread (or all at once), archive / unarchive messages, send / accept / decline friend requests, unfriend, send private messages
-  and replies, accept / decline / counter inbound trades and send new ones from a
+  and replies, send chat messages (starting the conversation if there is none yet), accept / decline / counter inbound trades and send new ones from a
   trade builder (the dialog lists both sides and their RAP totals), list a collectible for sale, change its price or take it off
   sale (with its RAP and the cheapest other listing).
 - **Make it yours**: pick an accent colour and background in Settings.
@@ -43,12 +46,12 @@ hexium-client --check
 ```
 
 Calls every read endpoint once with your session and reports what parsed, one line per
-endpoint. Exit code 0 means everything passed.
+endpoint, plus a live handshake with the chat hub. Exit code 0 means everything passed.
 
 ## Layout
 
 - `src/api/` — transport (`mod.rs`: cookies, CSRF retry like the site, no automatic
-  retry of writes), endpoint wrappers (`endpoints.rs`) and tolerant models (`models.rs`).
+  retry of writes), the chat hub client (`hub.rs`), endpoint wrappers (`endpoints.rs`) and tolerant models (`models.rs`).
 - `src/app.rs` — state, loading, and the write actions with their confirmation flow.
 - `src/ui/` — the shell (theme, fonts, navigation, dialogs) and one file per screen.
 - `src/check.rs` — the `--check` endpoint report.

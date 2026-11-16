@@ -104,6 +104,9 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
                                     ui.add(egui::Spinner::new().size(12.0));
                                 }
                             }
+                            if ui.button("Chat").clicked() {
+                                app.chat_with(user.id, &user.name);
+                            }
                             if ui.button("Message").clicked() {
                                 app.compose_to(user.id, &user.name);
                             }

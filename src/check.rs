@@ -460,6 +460,33 @@ async fn run_all(client: &ApiClient) -> Vec<Row> {
         |status, value| array_like(status, value, &["collection"])
     );
 
+    // -- chat --------------------------------------------------------------
+    check!(
+        rows, client,
+        "chat/v2/chat-settings",
+        &p("chat", "/v2/chat-settings"),
+        &[],
+        |status, value| match value.get("chatEnabled").and_then(Value::as_bool) {
+            Some(enabled) => (Verdict::Pass, format!("HTTP {status} · chatEnabled={enabled}")),
+            None => (Verdict::Warn, format!("HTTP {status} · no chatEnabled; keys: {}", keys(value))),
+        }
+    );
+    check!(
+        rows, client,
+        "chat/v2/get-user-conversations",
+        &p("chat", "/v2/get-user-conversations"),
+        &[("pageNumber", "1".to_string()), ("pageSize", "100".to_string())],
+        |status, value| array_like(status, value, &["data", "conversations"])
+    );
+    {
+        let started = Instant::now();
+        let (verdict, detail) = match crate::api::hub::probe(client).await {
+            Ok(detail) => (Verdict::Pass, detail),
+            Err(error) => (Verdict::Fail, error),
+        };
+        rows.push(Row { name: "chat hub (SignalR /chat)", detail, verdict, ms: started.elapsed().as_millis() });
+    }
+
     check!(
         rows, client,
         "trades/v1/trades/inbound/count",

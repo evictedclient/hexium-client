@@ -1,12 +1,14 @@
 //! Application state: one screen per message, all network work on a tokio runtime,
 //! results drained on the UI thread each frame.
 
+use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use eframe::egui;
 
+use crate::api::hub::{self, HubEvent, HubHandle, HubStatus};
 use crate::api::{endpoints, models, ApiClient};
 use crate::config::Config;
 use crate::ui::{Ctx, Thumbs};
@@ -25,12 +27,13 @@ pub enum View {
     Inventory,
     Money,
     Messages,
+    Chat,
     Trades,
     Settings,
 }
 
 impl View {
-    pub const ALL: [View; 12] = [
+    pub const ALL: [View; 13] = [
         View::Home,
         View::Games,
         View::Catalog,
@@ -41,6 +44,7 @@ impl View {
         View::Inventory,
         View::Money,
         View::Messages,
+        View::Chat,
         View::Trades,
         View::Settings,
     ];
@@ -57,6 +61,7 @@ impl View {
             View::Inventory => "Inventory",
             View::Money => "Money",
             View::Messages => "Messages",
+            View::Chat => "Chat",
             View::Trades => "Trades",
             View::Settings => "Settings",
         }
@@ -125,6 +130,12 @@ pub enum Msg {
     Resale(u64, Res<models::ResaleInfo>),
     FavouriteState(u64, Res<bool>),
     WriteDone(WriteAction, Res<()>),
+    ChatList(Res<models::ChatBundle>),
+    ChatMessages(u64, Res<Vec<models::ChatMessage>>),
+    /// A chat message went out: the conversation it went to (new or existing)
+    /// and the message as the site echoed it.
+    ChatSent(models::ChatConversation, models::ChatMessage),
+    Hub(HubEvent),
 }
 
 /// Something that changes the signed-in account. Nothing here is sent until the
@@ -180,6 +191,13 @@ pub enum WriteAction {
         reply_to: Option<u64>,
         include_previous: bool,
     },
+    /// A chat message. With no conversation yet, one is started with `user_id` first.
+    SendChat {
+        conversation_id: Option<u64>,
+        user_id: u64,
+        recipient: String,
+        text: String,
+    },
 }
 
 impl WriteAction {
@@ -211,6 +229,8 @@ impl WriteAction {
             WriteAction::AnswerTrade { accept: false, .. } => "Decline trade".to_string(),
             WriteAction::SendMessage { reply_to: Some(_), .. } => "Send reply".to_string(),
             WriteAction::SendMessage { .. } => "Send message".to_string(),
+            WriteAction::SendChat { conversation_id: None, .. } => "Start chat".to_string(),
+            WriteAction::SendChat { .. } => "Send chat message".to_string(),
         }
     }
 
@@ -293,6 +313,9 @@ impl WriteAction {
             WriteAction::AnswerTrade { partner, accept, give, get, .. } => {
                 trade_summary(partner, *accept, give, get)
             }
+            WriteAction::SendChat { conversation_id, recipient, text, .. } => {
+                chat_summary(recipient, conversation_id.is_none(), text)
+            }
             WriteAction::SendMessage { recipient, subject, body, reply_to, include_previous, .. } => {
                 let preview: String = body.chars().take(160).collect();
                 let more = if body.chars().count() > 160 { "…" } else { "" };
@@ -335,6 +358,7 @@ impl WriteAction {
             WriteAction::AnswerTrade { accept: true, .. } => "Accept trade",
             WriteAction::AnswerTrade { accept: false, .. } => "Decline trade",
             WriteAction::SendMessage { .. } => "Send",
+            WriteAction::SendChat { .. } => "Send",
         }
     }
 }
@@ -466,6 +490,17 @@ fn offer_summary(partner: &str, counter: bool, give: &TradeSide, get: &TradeSide
     });
     out.push_str("\nNothing moves until they accept, and they can decline or counter.");
     out
+}
+
+fn chat_summary(recipient: &str, starts: bool, text: &str) -> String {
+    let preview: String = text.chars().take(300).collect();
+    let more = if text.chars().count() > 300 { "…" } else { "" };
+    let start = if starts {
+        format!("This starts a chat with {recipient} and sends:")
+    } else {
+        format!("This chat message goes to {recipient}:")
+    };
+    format!("{start}\n\n{preview}{more}\n\nIt cannot be unsent.")
 }
 
 fn group_digits(value: u64) -> String {
@@ -626,6 +661,53 @@ pub struct TradesState {
     pub detail: Load<models::TradeDetail>,
 }
 
+/// Who the open chat is with: an existing conversation, or a friend you have
+/// not chatted with yet (the conversation is started with the first message).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChatTarget {
+    Conversation(u64),
+    NewWith { user_id: u64, name: String },
+}
+
+#[derive(Default)]
+pub struct ChatState {
+    pub list: Load<models::ChatBundle>,
+    pub target: Option<ChatTarget>,
+    pub messages: Load<Vec<models::ChatMessage>>,
+    pub draft: String,
+    pub filter: String,
+    /// `None` until the hub has said anything.
+    pub hub: Option<HubStatus>,
+    /// Conversation id -> (user id, typing until, epoch ms).
+    pub typing: HashMap<u64, (u64, u64)>,
+    /// Last message id marked read per conversation, so it is sent once.
+    marked: HashMap<u64, String>,
+    polled_at: Option<Instant>,
+    listed_at: Option<Instant>,
+    /// Bumped when new messages arrive, so the view scrolls to the bottom.
+    pub arrivals: u64,
+}
+
+impl ChatState {
+    pub fn unread_count(&self) -> u64 {
+        self.list
+            .ready()
+            .map(|bundle| bundle.conversations.iter().filter(|conversation| conversation.unread).count() as u64)
+            .unwrap_or(0)
+    }
+
+    pub fn open_conversation(&self) -> Option<u64> {
+        match &self.target {
+            Some(ChatTarget::Conversation(id)) => Some(*id),
+            _ => None,
+        }
+    }
+
+    pub fn hub_live(&self) -> bool {
+        self.hub == Some(HubStatus::Live)
+    }
+}
+
 pub struct App {
     _runtime: tokio::runtime::Runtime,
     pub rt: tokio::runtime::Handle,
@@ -660,6 +742,8 @@ pub struct App {
     pub money: MoneyState,
     pub messages: MessagesState,
     pub trades: TradesState,
+    pub chat: ChatState,
+    hub: Option<HubHandle>,
     refreshed_at: Instant,
     last_resize_check: Instant,
 }
@@ -706,6 +790,8 @@ impl App {
             money: MoneyState::default(),
             messages: MessagesState::default(),
             trades: TradesState::default(),
+            chat: ChatState::default(),
+            hub: None,
             refreshed_at: Instant::now(),
             last_resize_check: Instant::now(),
         };
@@ -1240,6 +1326,224 @@ impl App {
         });
     }
 
+    // -- chat -------------------------------------------------------------
+
+    /// Connects to the chat hub once there is a session. Runs until sign-out.
+    fn start_hub(&mut self) {
+        if self.hub.is_some() || !self.api.has_session() {
+            return;
+        }
+        let tx = self.tx.clone();
+        let egui = self.egui.clone();
+        self.hub = Some(hub::spawn(&self.rt, self.api.clone(), move |event| {
+            if tx.send(Msg::Hub(event)).is_ok() {
+                egui.request_repaint();
+            }
+        }));
+    }
+
+    fn stop_hub(&mut self) {
+        if let Some(handle) = self.hub.take() {
+            handle.stop();
+        }
+        self.chat.hub = None;
+    }
+
+    pub fn load_chat(&mut self) {
+        if !self.chat.list.is_idle() {
+            return;
+        }
+        let Some(me) = self.me_id() else { return };
+        self.chat.list = Load::Busy;
+        self.refresh_chat_list(me);
+    }
+
+    /// Refetches the list without blanking what is on screen.
+    fn refresh_chat_list(&mut self, me: u64) {
+        self.chat.listed_at = Some(Instant::now());
+        let cx = self.cx();
+        let api = cx.api.clone();
+        cx.spawn(async move {
+            Msg::ChatList(endpoints::chat_bundle(&api, me).await.map_err(|error| error.to_string()))
+        });
+    }
+
+    pub fn open_chat(&mut self, target: ChatTarget) {
+        if self.chat.target.as_ref() == Some(&target) {
+            return;
+        }
+        self.chat.draft.clear();
+        self.chat.messages = match &target {
+            ChatTarget::Conversation(_) => Load::Busy,
+            ChatTarget::NewWith { .. } => Load::Ready(Vec::new()),
+        };
+        self.chat.target = Some(target);
+        if let Some(id) = self.chat.open_conversation() {
+            self.fetch_chat_messages(id);
+        }
+    }
+
+    /// Chat with a user from elsewhere (a profile): their conversation if there
+    /// is one, otherwise a new one that starts with the first message.
+    pub fn chat_with(&mut self, user_id: u64, name: &str) {
+        let me = self.me_id().unwrap_or(0);
+        let existing = self.chat.list.ready().and_then(|bundle| {
+            bundle
+                .conversations
+                .iter()
+                .find(|conversation| {
+                    conversation.kind != "MultiUserConversation"
+                        && conversation.other(me).map(|other| other.id) == Some(user_id)
+                })
+                .map(|conversation| conversation.id)
+        });
+        self.view = View::Chat;
+        self.on_view_enter();
+        match existing {
+            Some(id) => self.open_chat(ChatTarget::Conversation(id)),
+            None => self.open_chat(ChatTarget::NewWith { user_id, name: name.to_string() }),
+        }
+    }
+
+    fn fetch_chat_messages(&mut self, conversation: u64) {
+        self.chat.polled_at = Some(Instant::now());
+        let cx = self.cx();
+        let api = cx.api.clone();
+        cx.spawn(async move {
+            Msg::ChatMessages(
+                conversation,
+                endpoints::chat_messages(&api, conversation).await.map_err(|error| error.to_string()),
+            )
+        });
+    }
+
+    /// What the site does on its own while a conversation is open: mark up to
+    /// the newest message read. Sent once per newest message.
+    fn mark_chat_read(&mut self, conversation: u64) {
+        let Some(last) = self.chat.messages.ready().and_then(|messages| messages.last()).map(|message| message.id.clone()) else {
+            return;
+        };
+        if last.is_empty() || self.chat.marked.get(&conversation) == Some(&last) {
+            return;
+        }
+        let unread = self
+            .chat
+            .list
+            .ready()
+            .and_then(|bundle| bundle.conversations.iter().find(|item| item.id == conversation))
+            .is_some_and(|item| item.unread);
+        let me = self.me_id().unwrap_or(0);
+        let theirs = self
+            .chat
+            .messages
+            .ready()
+            .and_then(|messages| messages.last())
+            .is_some_and(|message| message.sender_id != me && !message.read);
+        self.chat.marked.insert(conversation, last.clone());
+        if !unread && !theirs {
+            return;
+        }
+        if let Load::Ready(bundle) = &mut self.chat.list {
+            if let Some(item) = bundle.conversations.iter_mut().find(|item| item.id == conversation) {
+                item.unread = false;
+            }
+        }
+        let api = self.api.clone();
+        self.rt.spawn(async move {
+            let _ = endpoints::chat_mark_read(&api, conversation, &last).await;
+        });
+    }
+
+    /// Adds a message to its conversation in the list (and the open thread),
+    /// newest conversation first.
+    fn place_chat_message(&mut self, conversation: u64, message: models::ChatMessage) -> bool {
+        let me = self.me_id().unwrap_or(0);
+        let open = self.chat.open_conversation() == Some(conversation);
+        if open {
+            if let Load::Ready(messages) = &mut self.chat.messages {
+                let known = !message.id.is_empty() && messages.iter().any(|old| old.id == message.id);
+                if !known {
+                    messages.push(message.clone());
+                    self.chat.arrivals += 1;
+                }
+            }
+        }
+        let Load::Ready(bundle) = &mut self.chat.list else { return false };
+        let Some(index) = bundle.conversations.iter().position(|item| item.id == conversation) else {
+            return false;
+        };
+        let mut item = bundle.conversations.remove(index);
+        item.unread = !open && message.sender_id != me && message.sender_id != 0;
+        item.latest = Some(message);
+        bundle.conversations.insert(0, item);
+        true
+    }
+
+    fn on_hub(&mut self, event: HubEvent) {
+        match event {
+            HubEvent::Status(status) => {
+                // Coming back online may have missed messages.
+                let reconnected = status == HubStatus::Live && self.chat.hub.is_some() && !self.chat.hub_live();
+                self.chat.hub = Some(status);
+                if reconnected {
+                    if let Some(me) = self.me_id() {
+                        if self.chat.list.ready().is_some() {
+                            self.refresh_chat_list(me);
+                        }
+                    }
+                    if let Some(id) = self.chat.open_conversation() {
+                        self.fetch_chat_messages(id);
+                    }
+                }
+            }
+            HubEvent::Message { conversation_id, id, content, sent, user_id } => {
+                self.chat.typing.remove(&conversation_id);
+                let message = models::ChatMessage { id, content, sent, sender_id: user_id, read: false };
+                let placed = self.place_chat_message(conversation_id, message);
+                if !placed {
+                    // A conversation the list does not have yet.
+                    if let Some(me) = self.me_id() {
+                        self.refresh_chat_list(me);
+                    }
+                }
+                if self.view == View::Chat && self.chat.open_conversation() == Some(conversation_id) {
+                    self.mark_chat_read(conversation_id);
+                }
+            }
+            HubEvent::Typing { conversation_id, user_id, ends_at_ms } => {
+                if Some(user_id) != self.me_id() {
+                    self.chat.typing.insert(conversation_id, (user_id, ends_at_ms));
+                }
+            }
+            HubEvent::ConversationAdded => {
+                if let Some(me) = self.me_id() {
+                    self.refresh_chat_list(me);
+                }
+            }
+        }
+    }
+
+    /// Polling the site itself uses (6 s for the open conversation, 60 s for the
+    /// list). While the hub is live the open conversation is only checked every
+    /// 30 s, as a safety net.
+    fn poll_chat(&mut self) {
+        let Some(me) = self.me_id() else { return };
+        let live = self.chat.hub_live();
+        if self.view == View::Chat {
+            if let Some(id) = self.chat.open_conversation() {
+                let every = Duration::from_secs(if live { 30 } else { 6 });
+                let due = self.chat.polled_at.map_or(true, |at| at.elapsed() >= every);
+                if due && self.chat.messages.ready().is_some() {
+                    self.fetch_chat_messages(id);
+                }
+            }
+        }
+        let due = self.chat.listed_at.map_or(false, |at| at.elapsed() >= Duration::from_secs(60));
+        if due && self.chat.list.ready().is_some() {
+            self.refresh_chat_list(me);
+        }
+    }
+
     /// Opens the confirmation dialog. Nothing is sent yet.
     pub fn ask(&mut self, action: WriteAction) {
         if self.pending_write.as_ref().is_some_and(|pending| pending.sending) {
@@ -1271,6 +1575,35 @@ impl App {
         pending.sending = true;
         pending.error = None;
         let action = pending.action.clone();
+        if let WriteAction::SendChat { conversation_id, user_id, text, .. } = &action {
+            let (conversation_id, user_id, text) = (*conversation_id, *user_id, text.clone());
+            let tx = self.tx.clone();
+            let cx = self.cx();
+            let api = cx.api.clone();
+            cx.spawn(async move {
+                let sent = async {
+                    let conversation = match conversation_id {
+                        Some(id) => models::ChatConversation { id, ..Default::default() },
+                        None => endpoints::chat_start(&api, user_id).await?,
+                    };
+                    let message = endpoints::chat_send(&api, conversation.id, &text).await?;
+                    Ok::<_, crate::api::ApiError>((conversation, message))
+                }
+                .await;
+                let result = match sent {
+                    Ok((conversation, message)) => {
+                        let _ = tx.send(Msg::ChatSent(conversation, message));
+                        Ok(())
+                    }
+                    Err(crate::api::ApiError::Network(detail)) => Err(format!(
+                        "{detail}. The message may or may not have gone through; wait for the chat to refresh before sending it again."
+                    )),
+                    Err(other) => Err(other.to_string()),
+                };
+                Msg::WriteDone(action, result)
+            });
+            return;
+        }
         let cx = self.cx();
         let api = cx.api.clone();
         cx.spawn(async move {
@@ -1319,6 +1652,8 @@ impl App {
                 WriteAction::SendMessage { recipient_id, subject, body, reply_to, include_previous, .. } => {
                     endpoints::send_message(&api, *recipient_id, subject, body, *reply_to, *include_previous).await
                 }
+                // Handled above.
+                WriteAction::SendChat { .. } => Ok(()),
             };
             let result = result.map_err(|error| match error {
                 // A write that lost its connection may still have landed.
@@ -1562,6 +1897,10 @@ impl App {
                 }
                 format!("Message sent to {recipient}.")
             }
+            WriteAction::SendChat { .. } => {
+                // The thread already shows it (Msg::ChatSent); no banner needed.
+                return;
+            }
         };
         self.notice = Some((true, message));
     }
@@ -1766,6 +2105,12 @@ impl App {
             View::Inventory => self.inventory.data = Load::Idle,
             View::Money => self.money.data = Load::Idle,
             View::Messages => self.messages.data = Load::Idle,
+            View::Chat => {
+                self.chat.list = Load::Idle;
+                if let Some(id) = self.chat.open_conversation() {
+                    self.fetch_chat_messages(id);
+                }
+            }
             View::Trades => {
                 self.trades.data = Load::Idle;
                 self.trades.detail = Load::Idle;
@@ -1800,6 +2145,7 @@ impl App {
             View::Inventory => self.load_inventory(),
             View::Money => self.load_money(),
             View::Messages => self.load_messages(),
+            View::Chat => self.load_chat(),
             View::Trades => self.load_trades(),
             View::Settings => {}
         }
@@ -1823,6 +2169,7 @@ impl App {
     }
 
     pub fn sign_out(&mut self) {
+        self.stop_hub();
         self.api.set_session(None);
         self.cfg.session_cookie = None;
         self.cfg.save();
@@ -1848,6 +2195,7 @@ impl App {
         self.money = MoneyState::default();
         self.messages = MessagesState::default();
         self.trades = TradesState::default();
+        self.chat = ChatState::default();
         self.view = View::Home;
     }
 
@@ -1856,6 +2204,7 @@ impl App {
             Msg::Session(result) => match result {
                 Ok(session) => {
                     self.session = Load::Ready(session);
+                    self.start_hub();
                     self.auth_error = None;
                     self.stale_error = None;
                     self.refreshed_at = Instant::now();
@@ -2064,6 +2413,72 @@ impl App {
                 }
             }
             Msg::WriteDone(action, result) => self.finish_write(action, result),
+            Msg::ChatList(result) => match result {
+                Ok(bundle) => {
+                    self.chat.list = Load::Ready(bundle);
+                    if let Some(id) = self.chat.open_conversation() {
+                        if self.view == View::Chat {
+                            self.mark_chat_read(id);
+                        }
+                    }
+                }
+                // A failed background refresh keeps the list that is showing.
+                Err(error) => {
+                    if self.chat.list.ready().is_none() {
+                        self.chat.list = Load::Err(error);
+                    }
+                }
+            },
+            Msg::ChatMessages(id, result) => {
+                if self.chat.open_conversation() != Some(id) {
+                    return;
+                }
+                match result {
+                    Ok(messages) => {
+                        let before = self.chat.messages.ready().map(|old| (old.len(), old.last().map(|last| last.id.clone())));
+                        let after = (messages.len(), messages.last().map(|last| last.id.clone()));
+                        if before.as_ref() != Some(&after) {
+                            self.chat.arrivals += 1;
+                        }
+                        self.chat.messages = Load::Ready(messages);
+                        if self.view == View::Chat {
+                            self.mark_chat_read(id);
+                        }
+                    }
+                    Err(error) => {
+                        if self.chat.messages.ready().is_none() {
+                            self.chat.messages = Load::Err(error);
+                        }
+                    }
+                }
+            }
+            Msg::ChatSent(conversation, message) => {
+                self.chat.draft.clear();
+                let id = conversation.id;
+                if matches!(self.chat.target, Some(ChatTarget::NewWith { .. })) {
+                    // The new conversation becomes the open one.
+                    self.chat.target = Some(ChatTarget::Conversation(id));
+                    self.chat.messages = Load::Ready(Vec::new());
+                }
+                let mut message = message;
+                if message.sender_id == 0 {
+                    message.sender_id = self.me_id().unwrap_or(0);
+                }
+                if message.content.is_empty() {
+                    // The echo had no text; the thread refetch below fills it in.
+                    self.fetch_chat_messages(id);
+                } else if !self.place_chat_message(id, message) {
+                    if let Some(me) = self.me_id() {
+                        self.refresh_chat_list(me);
+                    }
+                }
+                if let Some(me) = self.me_id() {
+                    if self.chat.list.ready().is_some_and(|bundle| !bundle.conversations.iter().any(|item| item.id == id)) {
+                        self.refresh_chat_list(me);
+                    }
+                }
+            }
+            Msg::Hub(event) => self.on_hub(event),
             Msg::Probe(ok) => self.probe_result = Some(ok),
         }
     }
@@ -2087,6 +2502,14 @@ impl eframe::App for App {
         if self.applied_theme != wanted {
             crate::ui::apply_theme(ctx, &self.cfg.theme, &self.cfg.accent);
             self.applied_theme = wanted;
+        }
+
+        if self.session.ready().is_some() {
+            self.poll_chat();
+            // Keep frames coming while polling, even with no input.
+            if self.view == View::Chat {
+                ctx.request_repaint_after(Duration::from_secs(1));
+            }
         }
 
         if self.session.ready().is_some() && self.refreshed_at.elapsed() > Duration::from_secs(120) {

@@ -20,6 +20,7 @@ use serde_json::Value;
 use tokio::time::sleep;
 
 pub mod endpoints;
+pub mod hub;
 pub mod models;
 
 /// What the site's own bundle sends.
@@ -134,6 +135,11 @@ impl ApiClient {
         } else {
             format!("{}/{path}", self.origin)
         }
+    }
+
+    /// The Cookie header for the chat hub's WebSocket upgrade. Never log it.
+    pub(crate) fn cookie_header_value(&self) -> Option<String> {
+        self.cookie_header()
     }
 
     fn cookie_header(&self) -> Option<String> {

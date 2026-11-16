@@ -116,6 +116,7 @@ pub fn show(app: &mut App, _cx: &Ctx, ui: &mut Ui) {
             "groups/v1 + groups/v2 — groups, roles, wall posts",
             "privatemessages/v1 — inbox, sent, archive and announcements",
             "trades/v1 — inbound, outbound, completed and inactive trades, trade details",
+            "chat/v2 + the /chat SignalR hub — conversations, messages, live updates",
             "api/alerts, auth/maintenance — banners",
         ] {
             muted(ui, line);
@@ -134,6 +135,6 @@ pub fn show(app: &mut App, _cx: &Ctx, ui: &mut Ui) {
     );
     muted(
         ui,
-        "Writes so far: follow and unfollow, friend requests (send, accept, decline) and unfriending, favourites, your status and description, game votes, message read state and archiving, sending private messages and replies, accepting, declining or countering inbound trades, sending new trades, and listing collectibles for sale. Each one asks for confirmation before anything is sent.",
+        "Writes so far: follow and unfollow, friend requests (send, accept, decline) and unfriending, favourites, your status and description, game votes, message read state and archiving, sending private messages and replies, chat messages, accepting, declining or countering inbound trades, sending new trades, and listing collectibles for sale. Each one asks for confirmation before anything is sent.",
     );
 }
