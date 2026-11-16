@@ -48,6 +48,11 @@ fn stat(ui: &mut Ui, label: &str, value: &str, color: Color32) {
 }
 
 pub fn show(ui: &mut Ui, data: &ResaleData) {
+    show_with_price(ui, data, None);
+}
+
+/// The chart with a price you are considering drawn across it.
+pub fn show_with_price(ui: &mut Ui, data: &ResaleData, yours: Option<u64>) {
     if data.points.is_empty() {
         muted(ui, "No sales recorded yet.");
         return;
@@ -80,6 +85,7 @@ pub fn show(ui: &mut Ui, data: &ResaleData) {
         .iter()
         .map(|point| point.price)
         .chain(std::iter::once(data.rap))
+        .chain(yours)
         .max()
         .unwrap_or(1)
         .max(1) as f32
@@ -113,6 +119,26 @@ pub fn show(ui: &mut Ui, data: &ResaleData) {
         let y = y_of(data.rap);
         painter.line_segment([Pos2::new(plot.left(), y), Pos2::new(plot.right(), y)], Stroke::new(1.0, ui::tint(GOLD, 170)));
         painter.text(Pos2::new(plot.right(), y - 2.0), Align2::RIGHT_BOTTOM, format!("RAP {}", ui::compact(data.rap)), small.clone(), GOLD);
+    }
+
+    // The price being considered.
+    if let Some(price) = yours.filter(|price| *price > 0) {
+        let y = y_of(price);
+        let color = ui::GREEN;
+        // Short dashes, so it reads as "not a sale".
+        let mut x = plot.left();
+        while x < plot.right() {
+            let end = (x + 6.0).min(plot.right());
+            painter.line_segment([Pos2::new(x, y), Pos2::new(end, y)], Stroke::new(1.5, color));
+            x += 10.0;
+        }
+        painter.text(
+            Pos2::new(plot.left() + 4.0, y - 2.0),
+            Align2::LEFT_BOTTOM,
+            format!("Your price {}", ui::compact(price)),
+            small.clone(),
+            color,
+        );
     }
 
     // Average sale price per day.

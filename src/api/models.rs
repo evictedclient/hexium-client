@@ -1026,6 +1026,8 @@ pub struct ResaleInfo {
     pub other_sellers: usize,
     pub sales: u64,
     pub rap: u64,
+    /// Per-day price and sales history, for the chart.
+    pub history: Option<ResaleData>,
 }
 
 /// `HairAccessory` -> `Hair Accessory`.

@@ -154,6 +154,13 @@ pub fn resale_window(app: &mut App, cx: &Ctx, ctx: &egui::Context) {
             });
 
             let Load::Ready(info) = &info else { return };
+            if let Some(history) = &info.history {
+                ui.add_space(8.0);
+                ui::eyebrow(ui, "Price history");
+                // What is typed so far, drawn across the chart.
+                let considering: Option<u64> = price_input.trim().parse().ok().filter(|price| *price > 0);
+                ui::chart::show_with_price(ui, history, considering);
+            }
             ui.add_space(10.0);
             ui.separator();
             match info.my_price {

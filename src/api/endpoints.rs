@@ -1086,12 +1086,15 @@ pub async fn resale_info(client: &ApiClient, me: u64, asset: u64, user_asset_id:
         Ok(data) => (num_at(data, "sales"), num_at(data, "recentAveragePrice")),
         Err(_) => (0, 0),
     };
+    // The same answer carries the per-day history for the chart.
+    let history = data.as_ref().ok().map(|data| ResaleData::from_value(asset, data));
     Ok(ResaleInfo {
         my_price,
         lowest_other,
         other_sellers,
         sales,
         rap,
+        history,
     })
 }
 
@@ -1256,8 +1259,36 @@ pub async fn trade_inventory(client: &ApiClient, id: u64) -> Result<TradeInvento
     Ok(TradeInventory { items, icons })
 }
 
-/// `api-trades.js` `sendTrade` / `counterTrade`: your offer first, theirs second.
-/// No Robux is added on either side.
+/// The `offers` body for send and counter. `robux` is left out of a side that
+/// adds none: the site's trade window sends it undefined (so the key is dropped),
+/// and this server answers a present `0` with "Cannot add negative Robux amounts
+/// to a trade" (code 11). Trades without Robux are stored with `robux: null`.
+pub fn trade_body(me: u64, partner: u64, give: &[u64], get: &[u64], give_robux: u64, get_robux: u64) -> Value {
+    let side = |user: u64, assets: &[u64], robux: u64| {
+        let mut offer = json!({ "userAssetIds": assets, "userId": user });
+        if robux > 0 {
+            offer["robux"] = json!(robux);
+        }
+        offer
+    };
+    json!({ "offers": [side(me, give, give_robux), side(partner, get, get_robux)] })
+}
+
+/// A counter's body: the same two sides, the partner's first.
+pub fn counter_body(me: u64, partner: u64, give: &[u64], get: &[u64]) -> Value {
+    let mut body = trade_body(me, partner, give, get, 0, 0);
+    if let Some(offers) = body["offers"].as_array_mut() {
+        offers.reverse();
+    }
+    body
+}
+
+/// `api-trades.js` `sendTrade` / `counterTrade`. No Robux is added on either side.
+///
+/// A new trade lists your offer first. A counter keeps the original trade's
+/// order, the original sender (your partner) first: with your side first this
+/// server answers "One or more userAssets are invalid" (code 12) even though
+/// every id is a real copy owned by the user named beside it.
 pub async fn send_trade(
     client: &ApiClient,
     me: u64,
@@ -1266,12 +1297,10 @@ pub async fn send_trade(
     get: &[u64],
     counter_of: Option<u64>,
 ) -> Result<()> {
-    let body = json!({
-        "offers": [
-            { "robux": 0, "userAssetIds": give, "userId": me },
-            { "robux": 0, "userAssetIds": get, "userId": partner },
-        ]
-    });
+    let body = match counter_of {
+        Some(_) => counter_body(me, partner, give, get),
+        None => trade_body(me, partner, give, get, 0, 0),
+    };
     let path = match counter_of {
         Some(id) => api("trades", &format!("/v1/trades/{id}/counter")),
         None => api("trades", "/v1/trades/send"),
@@ -1539,4 +1568,36 @@ pub async fn resale_data(client: &ApiClient, asset: u64) -> Result<ResaleData> {
         .get(&api("economy", &format!("/v1/assets/{asset}/resale-data")))
         .await?;
     Ok(ResaleData::from_value(asset, &value))
+}
+
+#[cfg(test)]
+mod trade_tests {
+    use super::{counter_body, trade_body};
+
+    /// A present `"robux": 0` is refused by the server; no Robux means no key.
+    #[test]
+    fn no_robux_key_without_robux() {
+        let body = trade_body(1, 2, &[10, 11], &[20], 0, 0);
+        let offers = body["offers"].as_array().unwrap();
+        assert_eq!(offers.len(), 2);
+        assert!(offers.iter().all(|offer| offer.get("robux").is_none()));
+        assert_eq!(offers[0]["userId"], 1);
+        assert_eq!(offers[0]["userAssetIds"], serde_json::json!([10, 11]));
+        assert_eq!(offers[1]["userId"], 2);
+
+        let with = trade_body(1, 2, &[10], &[20], 50, 0);
+        assert_eq!(with["offers"][0]["robux"], 50);
+        assert!(with["offers"][1].get("robux").is_none());
+    }
+
+    /// A counter puts the partner's side first; each side keeps its own items.
+    #[test]
+    fn counter_puts_the_partner_first() {
+        let body = counter_body(1, 2, &[10, 11], &[20]);
+        assert_eq!(body["offers"][0]["userId"], 2);
+        assert_eq!(body["offers"][0]["userAssetIds"], serde_json::json!([20]));
+        assert_eq!(body["offers"][1]["userId"], 1);
+        assert_eq!(body["offers"][1]["userAssetIds"], serde_json::json!([10, 11]));
+        assert!(body["offers"][0].get("robux").is_none());
+    }
 }
