@@ -70,9 +70,14 @@ pub fn decide(
     Some((title, body))
 }
 
-/// Shows a Windows toast without blocking the caller.
-pub fn show(rt: &tokio::runtime::Handle, title: String, body: String) {
-    rt.spawn_blocking(move || {
+/// Shows a Windows toast without blocking the caller, and runs `on_click` if the
+/// toast itself is clicked. A plain thread waits for that (until the toast is
+/// clicked or goes away), so closing the app never waits on it.
+pub fn show<F>(title: String, body: String, on_click: F)
+where
+    F: FnOnce() + Send + 'static,
+{
+    std::thread::spawn(move || {
         // Best effort: a toast that fails to show changes nothing else.
         let mut toast = notify_rust::Notification::new();
         // Our own id only once the shortcut that defines it exists.
@@ -80,14 +85,41 @@ pub fn show(rt: &tokio::runtime::Handle, title: String, body: String) {
         if crate::shortcut::registered() {
             toast.app_id(crate::shortcut::APP_ID);
         }
-        let _ = toast
+        let handle = toast
             .appname("hexium client")
             .summary(&title)
             .body(&body)
             .timeout(notify_rust::Timeout::Milliseconds(6000))
             .show();
+        let Ok(handle) = handle else { return };
+        let _ = handle.wait_for_response(|response: &notify_rust::NotificationResponse| {
+            if matches!(response, notify_rust::NotificationResponse::Default) {
+                on_click();
+            }
+        });
     });
 }
+
+/// Restores and raises the window. Done straight from the toast thread with
+/// the native handle: a minimised window may not be drawing, so a request
+/// through the UI loop alone could sit until it is.
+#[cfg(windows)]
+pub fn bring_to_front(hwnd: isize) {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{IsIconic, SetForegroundWindow, ShowWindow, SW_RESTORE, SW_SHOW};
+    if hwnd == 0 {
+        return;
+    }
+    let window = HWND(hwnd as *mut core::ffi::c_void);
+    unsafe {
+        let command = if IsIconic(window).as_bool() { SW_RESTORE } else { SW_SHOW };
+        let _ = ShowWindow(window, command);
+        let _ = SetForegroundWindow(window);
+    }
+}
+
+#[cfg(not(windows))]
+pub fn bring_to_front(_hwnd: isize) {}
 
 #[cfg(test)]
 mod tests {

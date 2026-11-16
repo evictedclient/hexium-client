@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -136,6 +137,8 @@ pub enum Msg {
     /// and the message as the site echoed it.
     ChatSent(models::ChatConversation, models::ChatMessage),
     Hub(HubEvent),
+    /// A chat notification was clicked.
+    OpenChat(u64),
 }
 
 /// Something that changes the signed-in account. Nothing here is sent until the
@@ -750,6 +753,8 @@ pub struct App {
     pub chat: ChatState,
     hub: Option<HubHandle>,
     notify_gate: crate::notify::SharedGate,
+    /// The native window handle, for raising the window from a toast click.
+    hwnd: Arc<AtomicIsize>,
     refreshed_at: Instant,
     last_resize_check: Instant,
 }
@@ -799,6 +804,7 @@ impl App {
             chat: ChatState::default(),
             hub: None,
             notify_gate: Default::default(),
+            hwnd: Arc::new(AtomicIsize::new(0)),
             refreshed_at: Instant::now(),
             last_resize_check: Instant::now(),
         };
@@ -1343,7 +1349,9 @@ impl App {
         let tx = self.tx.clone();
         let egui = self.egui.clone();
         let gate = self.notify_gate.clone();
-        let rt = self.rt.clone();
+        let hwnd = self.hwnd.clone();
+        let click_tx = self.tx.clone();
+        let click_egui = self.egui.clone();
         self.hub = Some(hub::spawn(&self.rt, self.api.clone(), move |event| {
             // Decided here rather than in the UI loop, which may be asleep while
             // the window is minimised.
@@ -1352,7 +1360,14 @@ impl App {
                     crate::notify::decide(&mut gate, *conversation_id, *user_id, content, Instant::now())
                 });
                 if let Some((title, body)) = toast {
-                    crate::notify::show(&rt, title, body);
+                    let conversation = *conversation_id;
+                    let (hwnd, tx, egui) = (hwnd.clone(), click_tx.clone(), click_egui.clone());
+                    crate::notify::show(title, body, move || {
+                        crate::notify::bring_to_front(hwnd.load(Ordering::Relaxed));
+                        if tx.send(Msg::OpenChat(conversation)).is_ok() {
+                            egui.request_repaint();
+                        }
+                    });
                 }
             }
             if tx.send(Msg::Hub(event)).is_ok() {
@@ -2578,6 +2593,16 @@ impl App {
                 }
             }
             Msg::Hub(event) => self.on_hub(event),
+            Msg::OpenChat(id) => {
+                // Also through egui, in case the native call was refused.
+                self.egui.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                self.egui.send_viewport_cmd(egui::ViewportCommand::Focus);
+                if self.session.ready().is_some() {
+                    self.view = View::Chat;
+                    self.on_view_enter();
+                    self.open_chat(ChatTarget::Conversation(id));
+                }
+            }
             Msg::Probe(ok) => self.probe_result = Some(ok),
         }
     }
@@ -2591,8 +2616,16 @@ fn into_load<T>(result: Res<T>) -> Load<T> {
 }
 
 impl eframe::App for App {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         self.egui = ctx.clone();
+        if self.hwnd.load(Ordering::Relaxed) == 0 {
+            use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+            if let Ok(handle) = frame.window_handle() {
+                if let RawWindowHandle::Win32(win32) = handle.as_raw() {
+                    self.hwnd.store(win32.hwnd.get(), Ordering::Relaxed);
+                }
+            }
+        }
         while let Ok(message) = self.rx.try_recv() {
             self.apply(message);
         }

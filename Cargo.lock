@@ -1569,6 +1569,7 @@ dependencies = [
  "egui_extras",
  "futures-util",
  "notify-rust",
+ "raw-window-handle",
  "reqwest",
  "serde",
  "serde_json",
