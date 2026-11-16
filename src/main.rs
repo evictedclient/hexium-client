@@ -5,6 +5,7 @@ mod app;
 mod check;
 mod config;
 mod icon;
+mod instance;
 mod notify;
 mod shortcut;
 mod ui;
@@ -40,6 +41,12 @@ fn main() -> eframe::Result<()> {
         println!("  --check          hit every read endpoint once and report what parsed");
         println!("  --register       add the Start menu shortcut that gives notifications their name and icon");
         println!("  --help           this text");
+        return Ok(());
+    }
+
+    // One client at a time: a second launch raises the first and leaves.
+    if !instance::claim() {
+        instance::wake_existing();
         return Ok(());
     }
 

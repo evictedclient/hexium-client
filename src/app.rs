@@ -2623,6 +2623,7 @@ impl eframe::App for App {
             if let Ok(handle) = frame.window_handle() {
                 if let RawWindowHandle::Win32(win32) = handle.as_raw() {
                     self.hwnd.store(win32.hwnd.get(), Ordering::Relaxed);
+                    crate::instance::publish(win32.hwnd.get());
                 }
             }
         }
