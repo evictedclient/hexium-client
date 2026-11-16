@@ -285,6 +285,12 @@ fn servers(app: &mut App, cx: &Ctx, ui: &mut Ui, place: u64) {
     }
 
     let busy = matches!(app.games.launch, Some((_, Load::Busy)));
+    let friends: std::collections::HashSet<u64> = app
+        .friends
+        .data
+        .ready()
+        .map(|bundle| bundle.friends.iter().map(|friend| friend.id).collect())
+        .unwrap_or_default();
     let mut join: Option<String> = None;
     let mut profile: Option<u64> = None;
     egui::ScrollArea::vertical()
@@ -313,6 +319,19 @@ fn servers(app: &mut App, cx: &Ctx, ui: &mut Ui, place: u64) {
                                         .size(10.5)
                                         .color(MUTED),
                                 );
+                                let here: Vec<&str> = server
+                                    .players
+                                    .iter()
+                                    .filter(|player| friends.contains(&player.id))
+                                    .map(|player| player.name.as_str())
+                                    .collect();
+                                if !here.is_empty() {
+                                    ui.label(
+                                        RichText::new(format!("Friends: {}", here.join(", ")))
+                                            .font(ui::semibold(10.5))
+                                            .color(accent()),
+                                    );
+                                }
                             });
                             ui.add_space(6.0);
                             for player in server.players.iter().take(8) {
@@ -321,7 +340,18 @@ fn servers(app: &mut App, cx: &Ctx, ui: &mut Ui, place: u64) {
                                     .show(ui, cx, player.headshot.as_deref(), egui::vec2(24.0, 24.0))
                                     .interact(egui::Sense::click())
                                     .on_hover_cursor(egui::CursorIcon::PointingHand)
-                                    .on_hover_text(&player.name);
+                                    .on_hover_text(if friends.contains(&player.id) {
+                                        format!("{} (friend)", player.name)
+                                    } else {
+                                        player.name.clone()
+                                    });
+                                if friends.contains(&player.id) {
+                                    ui.painter().rect_stroke(
+                                        face.rect.expand(1.5),
+                                        egui::Rounding::same(5.0),
+                                        egui::Stroke::new(2.0, accent()),
+                                    );
+                                }
                                 if face.clicked() && player.id != 0 {
                                     profile = Some(player.id);
                                 }

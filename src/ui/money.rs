@@ -114,13 +114,18 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
                             }
                         });
 
-                        if row.agent_id != 0 && !row.agent_name.is_empty() {
-                            if ui.link(RichText::new(&row.agent_name).size(12.0)).clicked() {
-                                open_profile = Some(row.agent_id);
+                        ui.horizontal(|ui| {
+                            if let Some(icon) = page.icons.get(&row.agent_id) {
+                                app.thumbs.show(ui, cx, Some(icon.as_str()), egui::vec2(20.0, 20.0));
                             }
-                        } else {
-                            ui.label(RichText::new(&row.agent_name).size(12.0));
-                        }
+                            if row.agent_id != 0 && !row.agent_name.is_empty() {
+                                if ui.link(RichText::new(&row.agent_name).size(12.0)).clicked() {
+                                    open_profile = Some(row.agent_id);
+                                }
+                            } else {
+                                ui.label(RichText::new(&row.agent_name).size(12.0));
+                            }
+                        });
 
                         let (unit, color) = if row.currency.eq_ignore_ascii_case("robux") {
                             ("R$", GOLD)

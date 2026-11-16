@@ -49,14 +49,7 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
                 ui::wrap(ui, |ui| {
                     for item in &bundle.items {
                         let icon = bundle.icons.get(&item.id).cloned();
-                        let price = match (item.price, item.price_tix) {
-                            (Some(robux), Some(tix)) => {
-                                format!("{} R$ · {} Tix", ui::money(robux), ui::money(tix))
-                            }
-                            (Some(robux), None) => format!("{} R$", ui::money(robux)),
-                            (None, Some(tix)) => format!("{} Tix", ui::money(tix)),
-                            (None, None) => "—".to_string(),
-                        };
+                        let price = price_text(item);
 
                         let kind = if item.asset_type.is_empty() {
                             item.item_type.as_str()
@@ -80,9 +73,14 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
                             ui.label(RichText::new(&name).font(ui::semibold(12.5)));
                             muted(ui, kind);
                             ui.label(RichText::new(price).size(12.5).color(GOLD));
-                            if item.off_sale {
-                                ui::pill(ui, "OFF SALE", MUTED);
-                            }
+                            ui.horizontal(|ui| {
+                                if let Some(tag) = item.limited_tag() {
+                                    ui::pill(ui, tag, GOLD);
+                                }
+                                if item.off_sale {
+                                    ui::pill(ui, "OFF SALE", MUTED);
+                                }
+                            });
                         });
                         if card.on_hover_text("Open details").clicked() && !selected {
                             app.catalog.selected = Some(item.clone());
@@ -136,7 +134,12 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
                         },
                     );
 
-                    if let Some(price) = detail.price {
+                    if let Some(tag) = detail.limited_tag() {
+                        ui::pill(ui, tag, GOLD);
+                    }
+                    if detail.resold {
+                        ui.label(RichText::new(resale_text(&detail)).color(GOLD));
+                    } else if let Some(price) = detail.price {
                         ui.label(RichText::new(format!("{} R$", ui::money(price))).color(GOLD));
                     }
                     if let Some(tix) = detail.price_tix {
@@ -181,5 +184,26 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
         if !open {
             app.catalog.selected = None;
         }
+    }
+}
+
+/// What a limited costs now: its cheapest reseller.
+fn resale_text(item: &crate::api::models::CatalogItem) -> String {
+    match item.resale_price {
+        Some(price) => format!("From {} R$", ui::money(price)),
+        None => "No resellers".to_string(),
+    }
+}
+
+/// The price line on a catalog card.
+fn price_text(item: &crate::api::models::CatalogItem) -> String {
+    if item.resold {
+        return resale_text(item);
+    }
+    match (item.price, item.price_tix) {
+        (Some(robux), Some(tix)) => format!("{} R$ · {} Tix", ui::money(robux), ui::money(tix)),
+        (Some(robux), None) => format!("{} R$", ui::money(robux)),
+        (None, Some(tix)) => format!("{} Tix", ui::money(tix)),
+        (None, None) => "—".to_string(),
     }
 }

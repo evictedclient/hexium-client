@@ -1,7 +1,7 @@
 use eframe::egui::{self, RichText, Ui};
 
 use crate::app::{App, Load, WriteAction};
-use crate::ui::{self, failed, h1, h2, muted, waiting, Ctx};
+use crate::ui::{self, accent, failed, h1, h2, muted, waiting, Ctx};
 
 pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
     app.load_friends();
@@ -113,6 +113,33 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
                                         app.open_profile(id);
                                     }
                                 });
+                                if let Some(place) = friend.place_id {
+                                    if !friend.location.is_empty() {
+                                        ui.label(
+                                            RichText::new(&friend.location)
+                                                .size(11.0)
+                                                .color(accent()),
+                                        );
+                                    }
+                                    let state = app
+                                        .friends
+                                        .join
+                                        .as_ref()
+                                        .filter(|(who, _)| *who == id)
+                                        .map(|(_, state)| state.clone());
+                                    let busy = matches!(app.friends.join, Some((_, Load::Busy)));
+                                    let label = if matches!(state, Some(Load::Busy)) { "Joining…" } else { "Join friend" };
+                                    if ui.add_enabled(!busy, egui::Button::new(label).small()).clicked() {
+                                        app.join_friend(id, friend.name.clone(), place);
+                                    }
+                                    match state {
+                                        Some(Load::Ready(year)) => muted(ui, &format!("Launching the {year} client…")),
+                                        Some(Load::Err(error)) => {
+                                            ui.label(RichText::new(error).size(11.0).color(ui::DANGER));
+                                        }
+                                        _ => {}
+                                    }
+                                }
                             });
                         });
                     });

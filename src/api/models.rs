@@ -305,6 +305,8 @@ pub struct Friend {
     pub is_online: bool,
     pub presence: i64,
     pub location: String,
+    /// The place they are playing, from presence (only while in a game).
+    pub place_id: Option<u64>,
 }
 
 impl Friend {
@@ -319,6 +321,7 @@ impl Friend {
             is_online: bool_at(value, "isOnline") || presence > 0,
             presence,
             location: str_at(value, "lastLocation"),
+            place_id: None,
         }
     }
 }
@@ -397,18 +400,42 @@ pub struct CatalogItem {
     pub asset_type: String,
     pub off_sale: bool,
     pub description: String,
+    /// `Limited` or `LimitedUnique`.
+    pub limited: bool,
+    pub unique: bool,
+    /// Cheapest reseller (`lowestPrice`).
+    pub resale_price: Option<i64>,
+    /// No longer sold by its creator; only resellers sell it.
+    pub resold: bool,
 }
 
 impl CatalogItem {
     pub fn from_value(value: &Value) -> Self {
-        let price = opt_num_at(value, "price")
-            .or_else(|| opt_num_at(value, "lowestPrice"))
+        let restrictions: Vec<&str> = arr_at(value, "itemRestrictions")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        let unique = restrictions.contains(&"LimitedUnique") || bool_at(value, "isLimitedUnique");
+        let limited = unique || restrictions.contains(&"Limited") || bool_at(value, "isLimited");
+        let for_sale = value.get("isForSale").and_then(Value::as_bool);
+        let resale_price = opt_num_at(value, "lowestPrice")
             .or_else(|| opt_num_at(value, "lowestResalePrice"))
             .map(|price| price as i64);
+        // A limited the creator no longer sells keeps its original `price`; what it
+        // costs now is the cheapest reseller, as on the site (`isResellableAsset`).
+        let resold = limited && for_sale != Some(true);
+        let price = if resold {
+            None
+        } else {
+            opt_num_at(value, "price")
+                .map(|price| price as i64)
+                .or(resale_price)
+        };
         let asset_type = asset_type_of(value);
-        let off_sale = bool_at(value, "isOffSale")
-            || str_at(value, "priceStatus").eq_ignore_ascii_case("off sale")
-            || value.get("isForSale").and_then(Value::as_bool) == Some(false);
+        let off_sale = !limited
+            && (bool_at(value, "isOffSale")
+                || str_at(value, "priceStatus").eq_ignore_ascii_case("off sale")
+                || for_sale == Some(false));
         Self {
             id: opt_num_at(value, "id")
                 .or_else(|| opt_num_at(value, "assetId"))
@@ -421,6 +448,19 @@ impl CatalogItem {
             asset_type,
             off_sale,
             description: str_at(value, "description"),
+            limited,
+            unique,
+            resale_price,
+            resold,
+        }
+    }
+
+    /// "LIMITED" / "LIMITED U" for the tag, if it is one.
+    pub fn limited_tag(&self) -> Option<&'static str> {
+        match (self.limited, self.unique) {
+            (_, true) => Some("LIMITED U"),
+            (true, false) => Some("LIMITED"),
+            _ => None,
         }
     }
 
@@ -486,23 +526,45 @@ pub struct WallPost {
     pub id: u64,
     pub body: String,
     pub poster: String,
+    pub poster_id: u64,
     pub created: String,
 }
 
 impl WallPost {
     pub fn from_value(value: &Value) -> Self {
-        let poster = value
-            .get("poster")
-            .and_then(|poster| poster.get("name"))
-            .and_then(Value::as_str)
-            .map(str::to_string)
+        // This site nests the person one level down: `poster.user.{userId, username}`.
+        let empty = Value::Null;
+        let poster = value.get("poster").unwrap_or(&empty);
+        let person = poster.get("user").unwrap_or(poster);
+        let name = optional_text(person, &["displayName", "username", "name"])
             .unwrap_or_else(|| str_at(value, "posterName"));
         Self {
             id: num_at(value, "id"),
             body: str_at(value, "body").replace("<br>", "\n"),
-            poster,
+            poster: name,
+            poster_id: opt_num_at(person, "userId")
+                .or_else(|| opt_num_at(person, "id"))
+                .or_else(|| opt_num_at(value, "posterId"))
+                .unwrap_or(0),
             created: str_at(value, "created"),
         }
+    }
+}
+
+#[cfg(test)]
+mod wall_tests {
+    use super::*;
+
+    /// The live shape (values made up).
+    #[test]
+    fn poster_is_nested_under_user() {
+        let value: Value = serde_json::from_str(
+            r#"{"id":1,"body":"hi","created":"2026-11-16T00:00:00Z",
+                "poster":{"user":{"buildersClubMembershipType":"None","userId":42,"username":"someone","displayName":"Someone","isVerified":false}}}"#,
+        )
+        .unwrap();
+        let post = WallPost::from_value(&value);
+        assert_eq!((post.poster.as_str(), post.poster_id), ("Someone", 42));
     }
 }
 
@@ -673,6 +735,8 @@ pub struct GroupDetail {
     pub roles: Vec<(String, u64)>,
     pub wall: Vec<WallPost>,
     pub icon: Option<String>,
+    /// Headshots of wall posters, by user id.
+    pub wall_icons: HashMap<u64, String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -707,6 +771,8 @@ pub struct Transaction {
     pub pending: bool,
     pub agent_id: u64,
     pub agent_name: String,
+    /// `User` or `Group`.
+    pub agent_type: String,
     pub item_id: u64,
     pub item_name: String,
     pub item_kind: String,
@@ -735,6 +801,7 @@ impl Transaction {
             pending: bool_at(value, "isPending"),
             agent_id: num_at(agent, "id"),
             agent_name: str_at(agent, "name"),
+            agent_type: str_at(agent, "type"),
             item_id: num_at(details, "id"),
             item_name: str_at(details, "name"),
             item_kind: str_at(details, "type"),
@@ -747,6 +814,8 @@ impl Transaction {
 #[derive(Debug, Clone, Default)]
 pub struct TransactionsPage {
     pub items: Vec<Transaction>,
+    /// Headshots of the users in the list, by user id.
+    pub icons: HashMap<u64, String>,
     pub next: Option<String>,
 }
 
@@ -756,6 +825,7 @@ pub struct Message {
     pub id: u64,
     pub sender_id: u64,
     pub sender_name: String,
+    pub recipient_id: u64,
     pub recipient_name: String,
     pub subject: String,
     pub body: String,
@@ -773,6 +843,7 @@ impl Message {
             id: num_at(value, "id"),
             sender_id: num_at(sender, "id"),
             sender_name: optional_text(sender, &["name", "displayName"]).unwrap_or_default(),
+            recipient_id: num_at(recipient, "id"),
             recipient_name: optional_text(recipient, &["name", "displayName"])
                 .unwrap_or_default(),
             subject: str_at(value, "subject"),
@@ -788,6 +859,8 @@ impl Message {
 #[derive(Debug, Clone, Default)]
 pub struct MessagesPage {
     pub items: Vec<Message>,
+    /// Headshots of the people in the list, by user id.
+    pub icons: HashMap<u64, String>,
     /// `totalCollectionSize`. The response's `totalPages` is not trustworthy (it
     /// said 1 for 35 messages at 20 a page), so paging goes by this count.
     pub total: u64,
@@ -1234,5 +1307,35 @@ mod server_tests {
         assert_eq!(server.players[0].headshot.as_deref(), Some("https://x/a.png"));
         assert!(server.players[1].headshot.is_none());
         assert!(server.can_join && !server.is_full());
+    }
+}
+
+#[cfg(test)]
+mod catalog_tests {
+    use super::*;
+
+    fn item(json: &str) -> CatalogItem {
+        CatalogItem::from_value(&serde_json::from_str(json).unwrap())
+    }
+
+    /// The live shape of a limited the creator no longer sells (values made up).
+    #[test]
+    fn limiteds_are_resold_not_off_sale() {
+        let unique = item(r#"{"id":1,"itemRestrictions":["LimitedUnique"],"isForSale":false,"price":100,"lowestPrice":550,"priceStatus":null}"#);
+        assert!(!unique.off_sale && unique.resold);
+        assert_eq!((unique.price, unique.resale_price, unique.limited_tag()), (None, Some(550), Some("LIMITED U")));
+
+        let limited = item(r#"{"id":2,"itemRestrictions":["Limited"],"isForSale":false,"price":65}"#);
+        assert!(!limited.off_sale && limited.resold && limited.resale_price.is_none());
+        assert_eq!(limited.limited_tag(), Some("LIMITED"));
+
+        // Still sold by the creator: the normal price.
+        let fresh = item(r#"{"id":3,"itemRestrictions":["LimitedUnique"],"isForSale":true,"price":200}"#);
+        assert!(!fresh.resold && !fresh.off_sale);
+        assert_eq!(fresh.price, Some(200));
+
+        // Ordinary items are unchanged.
+        let gone = item(r#"{"id":4,"itemRestrictions":[],"isForSale":false,"price":10}"#);
+        assert!(gone.off_sale && !gone.resold && gone.limited_tag().is_none());
     }
 }

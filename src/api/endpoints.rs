@@ -86,11 +86,21 @@ pub async fn transactions(
             ],
         )
         .await?;
+    let items: Vec<Transaction> = first_array(&value, &["data"])
+        .iter()
+        .map(Transaction::from_value)
+        .collect();
+    let mut ids: Vec<u64> = items
+        .iter()
+        .filter(|row| row.agent_id != 0 && !row.agent_type.eq_ignore_ascii_case("group"))
+        .map(|row| row.agent_id)
+        .collect();
+    ids.sort_unstable();
+    ids.dedup();
+    let icons = headshots(client, &ids).await.unwrap_or_default();
     Ok(TransactionsPage {
-        items: first_array(&value, &["data"])
-            .iter()
-            .map(Transaction::from_value)
-            .collect(),
+        items,
+        icons,
         next: value
             .get("nextPageCursor")
             .and_then(Value::as_str)
@@ -134,7 +144,15 @@ pub async fn messages(client: &ApiClient, tab: &str, page: u32) -> Result<Messag
         .map(Message::from_value)
         .collect();
     let total = num_at(&value, "totalCollectionSize").max(items.len() as u64);
-    Ok(MessagesPage { items, total })
+    let mut ids: Vec<u64> = items
+        .iter()
+        .flat_map(|message| [message.sender_id, message.recipient_id])
+        .filter(|id| *id != 0)
+        .collect();
+    ids.sort_unstable();
+    ids.dedup();
+    let icons = headshots(client, &ids).await.unwrap_or_default();
+    Ok(MessagesPage { items, total, icons })
 }
 
 /// The tabs on the site's Trades page, which are also the path segment
@@ -314,11 +332,15 @@ pub async fn friends(client: &ApiClient, id: u64) -> Result<Vec<Friend>> {
     // The list's own `presenceType` is always 0 on this site; presence/v1 has the
     // real state. If that call fails the list's `isOnline` flag still stands.
     let ids: Vec<u64> = friends.iter().map(|friend| friend.id).collect();
-    if let Ok(states) = presence(client, &ids).await {
+    if let Ok(states) = presence_details(client, &ids).await {
         for friend in &mut friends {
             if let Some(state) = states.get(&friend.id) {
-                friend.presence = *state;
-                friend.is_online = *state > 0;
+                friend.presence = state.kind;
+                friend.is_online = state.kind > 0;
+                friend.place_id = state.place_id;
+                if !state.location.is_empty() {
+                    friend.location = state.location.clone();
+                }
             }
         }
     }
@@ -333,6 +355,23 @@ pub async fn friends_bundle(client: &ApiClient, id: u64) -> Result<FriendsBundle
 }
 
 pub async fn presence(client: &ApiClient, ids: &[u64]) -> Result<HashMap<u64, i64>> {
+    Ok(presence_details(client, ids)
+        .await?
+        .into_iter()
+        .map(|(id, presence)| (id, presence.kind))
+        .collect())
+}
+
+/// Presence with the game: `placeId` and `lastLocation` while in a game. (Its
+/// `gameId` is a number, not the server id the join script takes.)
+#[derive(Debug, Clone, Default)]
+pub struct PresenceDetail {
+    pub kind: i64,
+    pub place_id: Option<u64>,
+    pub location: String,
+}
+
+pub async fn presence_details(client: &ApiClient, ids: &[u64]) -> Result<HashMap<u64, PresenceDetail>> {
     if ids.is_empty() {
         return Ok(HashMap::new());
     }
@@ -342,7 +381,15 @@ pub async fn presence(client: &ApiClient, ids: &[u64]) -> Result<HashMap<u64, i6
         .await?;
     let mut presence = HashMap::new();
     for entry in first_array(&value, &["userPresences"]) {
-        presence.insert(num_at(entry, "userId"), presence_number_of(entry));
+        let kind = presence_number_of(entry);
+        presence.insert(
+            num_at(entry, "userId"),
+            PresenceDetail {
+                kind,
+                place_id: if kind == 2 { opt_num_at(entry, "placeId").filter(|id| *id != 0) } else { None },
+                location: str_at(entry, "lastLocation"),
+            },
+        );
     }
     Ok(presence)
 }
@@ -696,11 +743,16 @@ pub async fn group_detail(client: &ApiClient, id: u64) -> Result<GroupDetail> {
         .unwrap_or_default()
         .remove(&id);
 
+    let mut posters: Vec<u64> = wall.iter().map(|post| post.poster_id).filter(|id| *id != 0).collect();
+    posters.sort_unstable();
+    posters.dedup();
+    let wall_icons = headshots(client, &posters).await.unwrap_or_default();
     Ok(GroupDetail {
         info,
         roles,
         wall,
         icon,
+        wall_icons,
     })
 }
 
@@ -1405,9 +1457,46 @@ pub async fn game_servers(client: &ApiClient, place: u64, start: u64) -> Result<
         .map(GameServer::from_value)
         .filter(|server| !server.job_id.is_empty())
         .collect();
+    let mut servers = servers;
+    // The listed thumbnails are relative redirects; use the thumbnails API.
+    let ids: Vec<u64> = servers
+        .iter()
+        .flat_map(|server| server.players.iter().map(|player| player.id))
+        .filter(|id| *id != 0)
+        .collect();
+    let icons = headshots(client, &ids).await.unwrap_or_default();
+    for player in servers.iter_mut().flat_map(|server| server.players.iter_mut()) {
+        player.headshot = icons
+            .get(&player.id)
+            .cloned()
+            .or_else(|| player.headshot.take().filter(|url| url.starts_with("http")));
+    }
     Ok(ServerPage {
         place_id: place,
         total: opt_num_at(&value, "TotalCollectionSize").unwrap_or(servers.len() as u64),
         servers,
     })
+}
+
+/// The server a user is playing on, found by walking the place's server list
+/// (at most 20 pages).
+pub async fn find_server_of(client: &ApiClient, place: u64, user: u64) -> Result<Option<String>> {
+    let mut start = 0u64;
+    for _ in 0..20 {
+        let query = [("placeId", place.to_string()), ("startIndex", start.to_string())];
+        let value = client.get_query("/games/getgameinstancesjson", &query).await?;
+        let servers: Vec<GameServer> = arr_at(&value, "Collection").iter().map(GameServer::from_value).collect();
+        if let Some(server) = servers
+            .iter()
+            .find(|server| server.players.iter().any(|player| player.id == user))
+        {
+            return Ok(Some(server.job_id.clone()));
+        }
+        let total = opt_num_at(&value, "TotalCollectionSize").unwrap_or(0);
+        start += servers.len() as u64;
+        if servers.is_empty() || start >= total {
+            break;
+        }
+    }
+    Ok(None)
 }

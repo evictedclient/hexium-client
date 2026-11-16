@@ -113,9 +113,15 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
                         muted(ui, "No wall posts.");
                     }
                     for post in detail.wall.iter().take(10) {
-                        ui.label(
-                            RichText::new(format!("{}: {}", post.poster, post.body)).size(11.5),
-                        );
+                        ui.horizontal_top(|ui| {
+                            let icon = detail.wall_icons.get(&post.poster_id).cloned();
+                            app.thumbs.show(ui, cx, icon.as_deref(), egui::vec2(24.0, 24.0));
+                            ui.vertical(|ui| {
+                                ui.label(RichText::new(&post.poster).font(ui::semibold(11.5)));
+                                ui.label(RichText::new(&post.body).size(11.5));
+                            });
+                        });
+                        ui.add_space(3.0);
                     }
                 }
                 Load::Err(error) => failed(ui, &error),

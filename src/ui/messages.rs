@@ -5,7 +5,7 @@ use crate::app::{App, Load, WriteAction};
 use crate::ui::{self, failed, h1, muted, waiting, Ctx, accent, GOLD, MUTED};
 
 
-pub fn show(app: &mut App, _cx: &Ctx, ui: &mut Ui) {
+pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
     app.load_messages();
 
     h1(ui, "Messages");
@@ -123,6 +123,10 @@ pub fn show(app: &mut App, _cx: &Ctx, ui: &mut Ui) {
                             ("from", message.sender_name.as_str())
                         };
                         ui.label(RichText::new(prefix).size(11.0).color(MUTED));
+                        let person = if sent { message.recipient_id } else { message.sender_id };
+                        if let Some(icon) = page.icons.get(&person) {
+                            app.thumbs.show(ui, cx, Some(icon.as_str()), egui::vec2(20.0, 20.0));
+                        }
                         if sent || message.sender_id == 0 || name.is_empty() {
                             let shown = if name.is_empty() { "unknown" } else { name };
                             ui.label(RichText::new(shown).size(11.0).color(MUTED));

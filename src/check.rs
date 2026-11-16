@@ -777,9 +777,15 @@ async fn run_all(client: &ApiClient) -> Vec<Row> {
         let (verdict, detail) = match endpoints::game_servers(client, place, 0).await {
             Ok(page) => {
                 let players: usize = page.servers.iter().map(|server| server.players.len()).sum();
+                let faces = page
+                    .servers
+                    .iter()
+                    .flat_map(|server| server.players.iter())
+                    .filter(|player| player.headshot.as_deref().is_some_and(|url| url.starts_with("http")))
+                    .count();
                 (
-                    Verdict::Pass,
-                    format!("{} server(s) of {} · {players} player(s)", page.servers.len(), page.total),
+                    if faces < players { Verdict::Warn } else { Verdict::Pass },
+                    format!("{} server(s) of {} · {players} player(s) · {faces} headshot(s)", page.servers.len(), page.total),
                 )
             }
             Err(error) => (Verdict::Fail, error.to_string()),

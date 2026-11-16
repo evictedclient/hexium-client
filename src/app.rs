@@ -141,6 +141,8 @@ pub enum Msg {
     OpenChat(u64),
     /// Play finished: the place and the client year, or why it failed.
     GameLaunched(u64, Res<String>),
+    /// Join friend finished: the friend, and the client year or why not.
+    FriendJoined(u64, Res<String>),
     /// A page of servers: (place, first index asked for, result).
     GameServers(u64, u64, Res<models::ServerPage>),
     /// A trades / friend requests / messages notification was clicked.
@@ -567,6 +569,8 @@ pub struct FriendsState {
     pub data: Load<models::FriendsBundle>,
     /// Pending requests sent to you.
     pub requests: Load<models::FriendRequestsBundle>,
+    /// The last Join friend: (friend, how it went).
+    pub join: Option<(u64, Load<String>)>,
 }
 
 #[derive(Default)]
@@ -1556,6 +1560,26 @@ impl App {
     }
 
     /// Servers of a place; `start` 0 replaces the list, more appends.
+    /// Join friend: find which server they are on, then join it.
+    pub fn join_friend(&mut self, user_id: u64, name: String, place_id: u64) {
+        if matches!(self.friends.join, Some((_, Load::Busy))) {
+            return;
+        }
+        self.friends.join = Some((user_id, Load::Busy));
+        let cx = self.cx();
+        let api = cx.api.clone();
+        cx.spawn(async move {
+            let result = match endpoints::find_server_of(&api, place_id, user_id).await {
+                Ok(Some(job)) => crate::play::launch(&api, place_id, Some(&job)).await,
+                Ok(None) => Err(format!(
+                    "Could not find {name}'s server. They may have just left, or be on a private server."
+                )),
+                Err(error) => Err(error.to_string()),
+            };
+            Msg::FriendJoined(user_id, result)
+        });
+    }
+
     pub fn load_servers(&mut self, place_id: u64, start: u64) {
         if start == 0 {
             self.games.servers = Load::Busy;
@@ -2353,6 +2377,8 @@ impl App {
         if let Some(place) = place {
             self.load_servers(place, 0);
         }
+        // To mark friends in the server list.
+        self.load_friends();
         let Some(universe) = self.selected_game_id() else {
             self.games.vote = Load::Idle;
             return;
@@ -2654,6 +2680,7 @@ impl App {
                 match result {
                     Ok(page) => {
                         if let Load::Ready(existing) = &mut self.money.data {
+                            existing.icons.extend(page.icons);
                             existing.items.extend(page.items);
                             existing.next = page.next;
                         } else {
@@ -2697,6 +2724,7 @@ impl App {
                     Ok(page) => {
                         self.messages.page += 1;
                         if let Load::Ready(existing) = &mut self.messages.data {
+                            existing.icons.extend(page.icons.clone());
                             for message in page.items {
                                 if !existing.items.iter().any(|known| known.id == message.id) {
                                     existing.items.push(message);
@@ -2857,6 +2885,11 @@ impl App {
                         }
                         Err(error) => self.notice = Some((false, format!("Could not load more servers: {error}"))),
                     }
+                }
+            }
+            Msg::FriendJoined(user, result) => {
+                if self.friends.join.as_ref().map(|(id, _)| *id) == Some(user) {
+                    self.friends.join = Some((user, into_load(result)));
                 }
             }
             Msg::GameLaunched(place, result) => {

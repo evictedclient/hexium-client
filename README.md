@@ -14,6 +14,8 @@ Not affiliated with hexium.wtf or Roblox.
 - **Play**: the Play button in a game's details fetches a join ticket and starts your
   installed Hexium launcher through `hexium://`, the same way the site does.
   Below it, the game's running servers (players, ping, fps) each have a Join button.
+  Friends in a server are outlined and listed; on the Friends screen, friends who are in a
+  game have a Join friend button that finds their server and joins it.
 - **You**: profile, avatar (body colours from the site's palette), inventory and
   collectibles, money and transaction history.
 - **Social**: friends and friend requests, messages, trades with full trade details, and
