@@ -21,6 +21,10 @@ pub struct Gate {
     pub focused: bool,
     /// The conversation open on the Chat screen, when that screen is showing.
     pub watching: Option<u64>,
+    /// Trades, friend requests and messages notifications switched on.
+    pub activity_enabled: bool,
+    /// The screen on show (its menu label), when the window has focus.
+    pub screen: &'static str,
     /// Conversations with unread messages, for the tray tooltip.
     pub unread: std::collections::HashSet<u64>,
     /// User id -> name, from the conversation list.

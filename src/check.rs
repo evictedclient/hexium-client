@@ -210,6 +210,7 @@ async fn run_all(client: &ApiClient) -> Vec<Row> {
     let mut friend = 0u64;
     let mut group = 0u64;
     let mut universe = 0u64;
+    let mut place: u64 = 0;
     let mut asset = 0u64;
 
     // -- users -------------------------------------------------------------
@@ -733,6 +734,7 @@ async fn run_all(client: &ApiClient) -> Vec<Row> {
                 if parsed.id != 0 {
                     universe = parsed.id;
                 }
+                place = parsed.place_id.unwrap_or(0);
                 if parsed.name.is_empty() {
                     return warn(format!(
                         "HTTP {status} · {} entries but no name · keys: {}",
@@ -748,6 +750,42 @@ async fn run_all(client: &ApiClient) -> Vec<Row> {
             }
         }
     );
+
+    // -- playing: everything up to the launch, without launching ---------
+    {
+        let started = Instant::now();
+        let (verdict, detail) = if place == 0 {
+            (Verdict::Warn, "skipped · no place id in the game list".to_string())
+        } else {
+            match client.get_text("/game/get-join-script", &[("placeId", place.to_string())]).await {
+                // The URL holds a sign-in ticket: report its shape only.
+                Ok(body) => match crate::play::launch_url(&body, place, None) {
+                    Ok(url) => {
+                        let year = url.split("&year=").nth(1).unwrap_or("?").split('&').next().unwrap_or("?").to_string();
+                        let scheme = url.split(':').next().unwrap_or_default().to_string();
+                        (Verdict::Pass, format!("{scheme}:// launch URL built · client year {year}"))
+                    }
+                    Err(error) => (Verdict::Fail, error),
+                },
+                Err(error) => (Verdict::Fail, error.to_string()),
+            }
+        };
+        rows.push(Row { name: "game/get-join-script", detail, verdict, ms: started.elapsed().as_millis() });
+    }
+    rows.push(match crate::play::launcher_registered() {
+        Some(command) => Row {
+            name: "hexium:// launcher",
+            detail: format!("registered · {command}"),
+            verdict: Verdict::Pass,
+            ms: 0,
+        },
+        None => Row {
+            name: "hexium:// launcher",
+            detail: "not registered; play once from hexium.wtf to install it".to_string(),
+            verdict: Verdict::Warn,
+            ms: 0,
+        },
+    });
 
     check!(
         rows, client,

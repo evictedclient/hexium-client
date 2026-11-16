@@ -11,6 +11,8 @@ Not affiliated with hexium.wtf or Roblox.
 - **Home**: a dashboard with your balances, what needs answering (messages, friend
   requests, trade offers), friends online and site events.
 - **Browse**: games, the catalog (with item details), groups.
+- **Play**: the Play button in a game's details fetches a join ticket and starts your
+  installed Hexium launcher through `hexium://`, the same way the site does.
 - **You**: profile, avatar (body colours from the site's palette), inventory and
   collectibles, money and transaction history.
 - **Social**: friends and friend requests, messages, trades with full trade details, and
@@ -25,12 +27,14 @@ Not affiliated with hexium.wtf or Roblox.
 - **One window**: launching the client again (from the Start menu, a shortcut, or a
   notification clicked in Action Center) brings the running one to the front instead
   of opening a second copy.
-- **Open at sign-in** (Settings > Chat): starts the client minimised when you log into
+- **Open at sign-in** (Settings > Chat): starts the client hidden in the tray when you log into
   Windows (a per-user `Run` entry with `--minimized`), so chat notifications arrive
   without opening it by hand.
 - **Tray icon**: closing the window keeps the client running in the notification area
   (switchable in Settings > Chat). Click the icon to open it; its menu has Open and
   Quit, and its tooltip shows how many chats are unread.
+- **Activity notifications**: new inbound trades, friend requests and messages show as
+  Windows notifications too (checked once a minute; switchable in Settings > Chat).
 - **Writes**, each behind a confirmation dialog that says exactly what will change:
   follow / unfollow, favourite / unfavourite, set your status and description, vote on games, mark messages read or
   unread (or all at once), archive / unarchive messages, send / accept / decline friend requests, unfriend, send private messages
@@ -60,7 +64,7 @@ hexium-client --check
 ```
 
 Calls every read endpoint once with your session and reports what parsed, one line per
-endpoint, plus a live handshake with the chat hub. Exit code 0 means everything passed.
+endpoint (plus checks that a game's join ticket turns into a launch URL, without launching), plus a live handshake with the chat hub. Exit code 0 means everything passed.
 
 ## Layout
 

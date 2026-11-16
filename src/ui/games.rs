@@ -1,7 +1,7 @@
 use eframe::egui::{self, RichText, Ui};
 
 use crate::app::{App, Load, WriteAction};
-use crate::ui::{self, failed, h1, muted, waiting, Ctx, MUTED};
+use crate::ui::{self, accent, failed, h1, muted, waiting, Ctx, MUTED};
 
 pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
     app.load_sorts();
@@ -185,6 +185,40 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
                     _ => waiting(ui, "votes"),
                 }
                 ui.add_space(6.0);
+                if let Some(place) = game.place_id {
+                    ui.horizontal(|ui| {
+                        let state = app
+                            .games
+                            .launch
+                            .as_ref()
+                            .filter(|(id, _)| *id == place)
+                            .map(|(_, state)| state.clone());
+                        let busy = matches!(state, Some(Load::Busy));
+                        let label = if busy { "Starting…" } else { "Play" };
+                        let button = egui::Button::new(
+                            RichText::new(label).font(ui::semibold(14.0)).color(egui::Color32::from_rgb(18, 18, 20)),
+                        )
+                        .fill(accent())
+                        .min_size(egui::vec2(96.0, 30.0));
+                        if ui.add_enabled(!busy, button).clicked() {
+                            app.play(place);
+                        }
+                        match state {
+                            Some(Load::Busy) => {
+                                ui.add(egui::Spinner::new().size(14.0).color(accent()));
+                                muted(ui, "Getting a join ticket…");
+                            }
+                            Some(Load::Ready(year)) => {
+                                muted(ui, &format!("Launching the {year} client. It opens in its own window."));
+                            }
+                            Some(Load::Err(error)) => {
+                                ui.label(RichText::new(error).size(12.0).color(ui::DANGER));
+                            }
+                            _ => {}
+                        }
+                    });
+                    ui.add_space(6.0);
+                }
                 ui.horizontal(|ui| {
                     if ui.button("Open on hexium.wtf").clicked() {
 

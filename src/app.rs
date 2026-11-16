@@ -139,6 +139,12 @@ pub enum Msg {
     Hub(HubEvent),
     /// A chat notification was clicked.
     OpenChat(u64),
+    /// Play finished: the place and the client year, or why it failed.
+    GameLaunched(u64, Res<String>),
+    /// A trades / friend requests / messages notification was clicked.
+    OpenView(View),
+    /// The watcher saw a counter move: refresh the badges.
+    ActivityChanged,
 }
 
 /// Something that changes the signed-in account. Nothing here is sent until the
@@ -570,6 +576,8 @@ pub struct GamesState {
     pub selected: Option<usize>,
     /// Votes for the game in the details window.
     pub vote: Load<models::GameVoteState>,
+    /// The last Play: (place id, how it went). `Busy` while the ticket is fetched.
+    pub launch: Option<(u64, Load<String>)>,
 }
 
 #[derive(Default)]
@@ -752,6 +760,7 @@ pub struct App {
     pub trades: TradesState,
     pub chat: ChatState,
     hub: Option<HubHandle>,
+    watch: Option<crate::watch::WatchHandle>,
     notify_gate: crate::notify::SharedGate,
     /// The native window handle, for raising the window from a toast click.
     hwnd: Arc<AtomicIsize>,
@@ -812,6 +821,7 @@ impl App {
             trades: TradesState::default(),
             chat: ChatState::default(),
             hub: None,
+            watch: None,
             notify_gate: Default::default(),
             start_minimized,
             autostart: crate::autostart::state(),
@@ -823,6 +833,18 @@ impl App {
         };
         if let Ok(mut gate) = app.notify_gate.lock() {
             gate.enabled = app.cfg.chat_notifications;
+            gate.activity_enabled = app.cfg.activity_notifications;
+        }
+        // The window handle now, not on the first frame: started hidden at
+        // sign-in, the tray's Open needs it before anything is drawn.
+        {
+            use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+            if let Ok(handle) = cc.window_handle() {
+                if let RawWindowHandle::Win32(win32) = handle.as_raw() {
+                    app.hwnd.store(win32.hwnd.get(), Ordering::Relaxed);
+                    crate::instance::publish(win32.hwnd.get());
+                }
+            }
         }
         app.start_tray();
         if app.api.has_session() {
@@ -831,6 +853,7 @@ impl App {
             // Not waiting for the first frame: started minimised at sign-in, the
             // window may not draw until it is opened.
             app.start_hub();
+            app.start_watch();
         }
         app
     }
@@ -1471,7 +1494,61 @@ impl App {
         self.autostart = crate::autostart::state();
     }
 
+    /// Notifications for trades, friend requests and messages (no live push for
+    /// those, so a once-a-minute watcher).
+    fn start_watch(&mut self) {
+        if self.watch.is_some() || !self.api.has_session() {
+            return;
+        }
+        let gate = self.notify_gate.clone();
+        let hwnd = self.hwnd.clone();
+        let (tx, egui) = (self.tx.clone(), self.egui.clone());
+        let (changed_tx, changed_egui) = (self.tx.clone(), self.egui.clone());
+        let report = move |kind: crate::watch::Kind, items: Vec<crate::watch::Item>| {
+            let view = match kind {
+                crate::watch::Kind::Trade => View::Trades,
+                crate::watch::Kind::FriendRequest => View::Friends,
+                crate::watch::Kind::Message => View::Messages,
+            };
+            let quiet = gate
+                .lock()
+                .map(|gate| !gate.activity_enabled || (gate.focused && gate.screen == view.label()))
+                .unwrap_or(true);
+            if quiet {
+                return;
+            }
+            let Some((title, body)) = crate::watch::toast_text(kind, &items) else { return };
+            let (hwnd, tx, egui) = (hwnd.clone(), tx.clone(), egui.clone());
+            crate::notify::show(title, body, move || {
+                crate::notify::bring_to_front(hwnd.load(Ordering::Relaxed));
+                if tx.send(Msg::OpenView(view)).is_ok() {
+                    egui.request_repaint();
+                }
+            });
+        };
+        let changed = move || {
+            if changed_tx.send(Msg::ActivityChanged).is_ok() {
+                changed_egui.request_repaint();
+            }
+        };
+        self.watch = Some(crate::watch::spawn(&self.rt, self.api.clone(), report, changed));
+    }
+
+    /// The Play button: fetch a join ticket and start the Hexium launcher.
+    pub fn play(&mut self, place_id: u64) {
+        if matches!(self.games.launch, Some((_, Load::Busy))) {
+            return;
+        }
+        self.games.launch = Some((place_id, Load::Busy));
+        let cx = self.cx();
+        let api = cx.api.clone();
+        cx.spawn(async move { Msg::GameLaunched(place_id, crate::play::launch(&api, place_id, None).await) });
+    }
+
     fn stop_hub(&mut self) {
+        if let Some(watch) = self.watch.take() {
+            watch.stop();
+        }
         if let Some(handle) = self.hub.take() {
             handle.stop();
         }
@@ -1666,6 +1743,8 @@ impl App {
             }
             gate.focused = focused && !minimized;
             gate.watching = watching;
+            gate.activity_enabled = self.cfg.activity_notifications;
+            gate.screen = if focused && !minimized { self.view.label() } else { "" };
             // While the UI runs, the chat list is the truth.
             if let Some(bundle) = self.chat.list.ready() {
                 gate.unread = bundle
@@ -2430,6 +2509,7 @@ impl App {
                 Ok(session) => {
                     self.session = Load::Ready(session);
                     self.start_hub();
+                    self.start_watch();
                     self.auth_error = None;
                     self.stale_error = None;
                     self.refreshed_at = Instant::now();
@@ -2708,6 +2788,20 @@ impl App {
                 }
             }
             Msg::Hub(event) => self.on_hub(event),
+            Msg::OpenView(view) => {
+                self.egui.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                self.egui.send_viewport_cmd(egui::ViewportCommand::Focus);
+                if self.session.ready().is_some() {
+                    crate::ui::go(self, view);
+                    self.reload_current_view();
+                }
+            }
+            Msg::ActivityChanged => self.load_session(),
+            Msg::GameLaunched(place, result) => {
+                if self.games.launch.as_ref().map(|(id, _)| *id) == Some(place) {
+                    self.games.launch = Some((place, into_load(result)));
+                }
+            }
             Msg::OpenChat(id) => {
                 // Also through egui, in case the native call was refused.
                 self.egui.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
@@ -2756,7 +2850,16 @@ impl eframe::App for App {
         self.handle_close(ctx);
         if self.start_minimized {
             self.start_minimized = false;
-            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+            if self.tray.is_some() {
+                // Straight into the tray. eframe shows the window after this
+                // first frame and applies this right after, so it never stays up.
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+                if let Ok(mut gate) = self.notify_gate.lock() {
+                    gate.focused = false;
+                }
+            } else {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+            }
         }
         self.sync_notify_gate(ctx);
 

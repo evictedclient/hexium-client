@@ -1,5 +1,5 @@
 //! "Open at sign-in": a value under the per-user `Run` key that starts the
-//! client minimised (`--minimized`) when you log into Windows. No admin rights,
+//! client hidden in the tray (`--minimized`) when you log into Windows. No admin rights,
 //! and nothing outside your own user hive.
 
 /// The command the `Run` value should hold for this exe.

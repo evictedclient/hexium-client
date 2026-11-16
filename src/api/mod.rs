@@ -246,6 +246,28 @@ impl ApiClient {
         self.send(Method::POST, path, &[], body).await
     }
 
+    /// A GET whose answer is plain text rather than JSON (the join script).
+    pub async fn get_text(&self, path: &str, query: &[(&str, String)]) -> Result<String> {
+        let (status, text, _) = self.attempt(&Method::GET, path, query, None).await?;
+        if status.is_success() {
+            if text.trim_start().starts_with('<') {
+                return Err(ApiError::Parse(
+                    "the site sent back a web page instead of the expected text".to_string(),
+                ));
+            }
+            return Ok(text);
+        }
+        match classify(status, &text) {
+            Err(error) => {
+                if matches!(error, ApiError::Auth(_)) {
+                    self.last_auth_status.store(status.as_u16(), Ordering::Relaxed);
+                }
+                Err(error)
+            }
+            Ok(_) => Ok(text),
+        }
+    }
+
     pub async fn patch(&self, path: &str, body: Option<Value>) -> Result<Value> {
         self.send(Method::PATCH, path, &[], body)
             .await

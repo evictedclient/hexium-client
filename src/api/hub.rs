@@ -313,7 +313,7 @@ fn to_event(target: &str, payload: &Value) -> Option<HubEvent> {
 }
 
 /// Percent-encodes a connection token for the query string.
-fn encode(text: &str) -> String {
+pub(crate) fn encode(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for byte in text.bytes() {
         match byte {

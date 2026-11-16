@@ -28,6 +28,9 @@ pub struct Config {
     /// Windows notifications for chat messages you are not looking at.
     #[serde(default = "default_true")]
     pub chat_notifications: bool,
+    /// Windows notifications for new trades, friend requests and messages.
+    #[serde(default = "default_true")]
+    pub activity_notifications: bool,
     /// Closing the window hides it to the tray instead of quitting.
     #[serde(default = "default_true")]
     pub close_to_tray: bool,
@@ -72,6 +75,7 @@ impl Default for Config {
             share_typing: true,
             chat_notifications: true,
             close_to_tray: true,
+            activity_notifications: true,
             shortcut_exe: None,
         }
     }

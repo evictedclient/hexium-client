@@ -130,11 +130,19 @@ pub fn show(app: &mut App, _cx: &Ctx, ui: &mut Ui) {
         }
         muted(ui, "Closing the window keeps the client running in the notification area, so chat keeps arriving. Quit from the tray icon's menu.");
         ui.add_space(6.0);
+        if ui
+            .checkbox(&mut app.cfg.activity_notifications, "Notifications for trades, friend requests and messages")
+            .changed()
+        {
+            app.cfg.save();
+        }
+        muted(ui, "Checked once a minute, since the site has no live push for these.");
+        ui.add_space(6.0);
         let mut at_sign_in = app.autostart != crate::autostart::State::Off;
         if ui.checkbox(&mut at_sign_in, "Open at sign-in").changed() {
             app.set_autostart(at_sign_in);
         }
-        muted(ui, "Starts the client minimised when you log into Windows, so chat notifications arrive without opening it.");
+        muted(ui, "Starts the client hidden in the tray when you log into Windows, so notifications arrive without opening it.");
         if app.autostart == crate::autostart::State::DisabledInTaskManager {
             ui.label(
                 RichText::new("Switched off in Task Manager > Startup apps. Turn it back on there for it to run.")

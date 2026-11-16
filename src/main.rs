@@ -1,4 +1,6 @@
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// No terminal window in any build; the command-line flags reattach to the
+// terminal they were run from.
+#![cfg_attr(all(windows, not(test)), windows_subsystem = "windows")]
 
 mod api;
 mod app;
@@ -8,9 +10,11 @@ mod config;
 mod icon;
 mod instance;
 mod notify;
+mod play;
 mod shortcut;
 mod tray;
 mod ui;
+mod watch;
 
 use std::sync::Arc;
 
@@ -41,7 +45,7 @@ fn main() -> eframe::Result<()> {
         println!("hexium client");
         println!("  (no arguments)   start the desktop client");
         println!("  --check          hit every read endpoint once and report what parsed");
-        println!("  --minimized      start minimised (what \"Open at sign-in\" uses)");
+        println!("  --minimized      start hidden in the tray (what \"Open at sign-in\" uses)");
         println!("  --register       add the Start menu shortcut that gives notifications their name and icon");
         println!("  --help           this text");
         return Ok(());
@@ -96,9 +100,9 @@ fn main() -> eframe::Result<()> {
     )
 }
 
-/// Release builds are GUI-subsystem, so `--check` needs the parent terminal
-/// back before it can print anything.
-#[cfg(all(windows, not(debug_assertions)))]
+/// The client is GUI-subsystem, so `--check` and friends need the parent
+/// terminal back before they can print anything.
+#[cfg(windows)]
 fn attach_parent_console() {
     extern "system" {
         fn AttachConsole(process_id: u32) -> i32;
@@ -109,5 +113,5 @@ fn attach_parent_console() {
     }
 }
 
-#[cfg(not(all(windows, not(debug_assertions))))]
+#[cfg(not(windows))]
 fn attach_parent_console() {}
