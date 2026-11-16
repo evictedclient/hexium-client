@@ -1,6 +1,6 @@
 use eframe::egui::{self, RichText, Ui};
 
-use crate::app::{App, Load};
+use crate::app::{App, Load, WriteAction};
 use crate::ui::{self, failed, h1, muted, waiting, Ctx, MUTED};
 
 pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
@@ -84,7 +84,7 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
                             });
                         });
                         if card.on_hover_text("Open details").clicked() {
-                            app.games.selected = Some(index);
+                            app.open_game(index);
                         }
                     }
                 });
@@ -116,6 +116,7 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
 
     if let Some((game, icon)) = selected {
         let mut open = true;
+        let mut ask_vote: Option<WriteAction> = None;
         egui::Window::new(format!("Game · {}", game.name))
             .id(egui::Id::new(("game", game.id)))
             .open(&mut open)
@@ -135,14 +136,6 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
                         muted(ui, creator);
                         muted(ui, &format!("{} playing now", ui::compact(game.playing)));
                         muted(ui, &format!("{} visits", ui::compact(game.visits)));
-                        muted(
-                            ui,
-                            &format!(
-                                "{} up · {} down",
-                                ui::compact(game.votes_up),
-                                ui::compact(game.votes_down)
-                            ),
-                        );
                     });
                 });
                 ui.add_space(6.0);
@@ -150,8 +143,51 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
                     ui.label(RichText::new(&game.description).size(12.0));
                     ui.add_space(6.0);
                 }
+                ui::eyebrow(ui, "Votes");
+                match app.games.vote.clone() {
+                    Load::Ready(state) => {
+                        ui.horizontal(|ui| {
+                            for up in [true, false] {
+                                let (label, count) = if up {
+                                    ("Thumbs up", state.up)
+                                } else {
+                                    ("Thumbs down", state.down)
+                                };
+                                let mine = state.user_vote == Some(up);
+                                let text = format!("{label} · {}", ui::compact(count));
+                                // Your current vote shows selected; there is no
+                                // "remove vote" call, only switching sides.
+                                let response = ui.add_enabled(
+                                    state.can_vote && !mine,
+                                    egui::SelectableLabel::new(mine, text),
+                                );
+                                if response.clicked() {
+                                    ask_vote = Some(WriteAction::VoteGame {
+                                        universe_id: game.id,
+                                        name: game.name.clone(),
+                                        up,
+                                        previous: state.user_vote,
+                                    });
+                                }
+                            }
+                        });
+                        if !state.can_vote {
+                            muted(
+                                ui,
+                                state
+                                    .reason
+                                    .as_deref()
+                                    .unwrap_or("You cannot vote on this game yet; usually you have to play it first."),
+                            );
+                        }
+                    }
+                    Load::Err(error) => muted(ui, &format!("Votes unavailable: {error}")),
+                    _ => waiting(ui, "votes"),
+                }
+                ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     if ui.button("Open on hexium.wtf").clicked() {
+
                         cx.open(&format!("{}{}", cx.api.origin(), game.site_path()));
                     }
                     if let Some(place) = game.place_id {
@@ -163,8 +199,12 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
                     }
                 });
             });
+        if let Some(action) = ask_vote {
+            app.ask(action);
+        }
         if !open {
             app.games.selected = None;
+            app.games.vote = Load::Idle;
         }
     }
 }

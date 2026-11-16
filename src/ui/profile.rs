@@ -129,6 +129,26 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
                                 });
                             }
                         });
+                        ui.add_space(4.0);
+                        ui.horizontal_top(|ui| {
+                            ui.add(
+                                egui::TextEdit::multiline(&mut app.profile.description_input)
+                                    .hint_text("About you…")
+                                    .char_limit(1000)
+                                    .desired_rows(3)
+                                    .desired_width(360.0),
+                            );
+                            let changed =
+                                app.profile.description_input.trim() != bundle.user.description.trim();
+                            if ui
+                                .add_enabled(changed, egui::Button::new("Save description"))
+                                .clicked()
+                            {
+                                app.ask(WriteAction::SetDescription {
+                                    description: app.profile.description_input.trim().to_string(),
+                                });
+                            }
+                        });
                     }
                 });
             });

@@ -120,6 +120,7 @@ pub enum Msg {
     FriendshipState(u64, Res<String>),
     FriendRequests(Res<models::FriendRequestsBundle>),
     UnreadIds(Res<Vec<u64>>),
+    GameVote(u64, Res<models::GameVoteState>),
     Resale(u64, Res<models::ResaleInfo>),
     FavouriteState(u64, Res<bool>),
     WriteDone(WriteAction, Res<()>),
@@ -135,6 +136,8 @@ pub enum WriteAction {
     MarkRead { message_id: u64, subject: String, read: bool },
     Archive { message_id: u64, subject: String, archive: bool },
     MarkAllRead { ids: Vec<u64> },
+    VoteGame { universe_id: u64, name: String, up: bool, previous: Option<bool> },
+    SetDescription { description: String },
     RequestFriend { user_id: u64, name: String },
     AcceptFriend { user_id: u64, name: String },
     DeclineFriend { user_id: u64, name: String },
@@ -181,6 +184,9 @@ impl WriteAction {
             WriteAction::Archive { archive: true, .. } => "Archive message".to_string(),
             WriteAction::Archive { archive: false, .. } => "Move to inbox".to_string(),
             WriteAction::MarkAllRead { .. } => "Mark all as read".to_string(),
+            WriteAction::VoteGame { up: true, .. } => "Thumbs up".to_string(),
+            WriteAction::VoteGame { up: false, .. } => "Thumbs down".to_string(),
+            WriteAction::SetDescription { .. } => "Change description".to_string(),
             WriteAction::RequestFriend { .. } => "Send friend request".to_string(),
             WriteAction::AcceptFriend { .. } => "Accept friend request".to_string(),
             WriteAction::DeclineFriend { .. } => "Decline friend request".to_string(),
@@ -224,6 +230,24 @@ impl WriteAction {
                     format!("\"{subject}\" moves to your Archive. You can move it back to the inbox from there.")
                 } else {
                     format!("\"{subject}\" moves back to your inbox.")
+                }
+            }
+            WriteAction::VoteGame { name, up, previous, .. } => {
+                let which = if *up { "thumbs up" } else { "thumbs down" };
+                let mut text = format!("Your account gives \"{name}\" a {which}.");
+                if *previous == Some(!*up) {
+                    let old = if *up { "thumbs down" } else { "thumbs up" };
+                    text.push_str(&format!(" This replaces your {old}."));
+                }
+                text
+            }
+            WriteAction::SetDescription { description } => {
+                if description.trim().is_empty() {
+                    "Your profile description will be cleared.".to_string()
+                } else {
+                    let preview: String = description.chars().take(300).collect();
+                    let more = if description.chars().count() > 300 { "…" } else { "" };
+                    format!("Your profile description will be set to:\n\n{preview}{more}\n\nAnyone who opens your profile can see it.")
                 }
             }
             WriteAction::MarkAllRead { ids } => {
@@ -280,6 +304,9 @@ impl WriteAction {
             WriteAction::Archive { archive: true, .. } => "Archive",
             WriteAction::Archive { archive: false, .. } => "Move to inbox",
             WriteAction::MarkAllRead { .. } => "Mark all read",
+            WriteAction::VoteGame { up: true, .. } => "Thumbs up",
+            WriteAction::VoteGame { up: false, .. } => "Thumbs down",
+            WriteAction::SetDescription { .. } => "Save description",
             WriteAction::RequestFriend { .. } => "Send request",
             WriteAction::AcceptFriend { .. } => "Accept",
             WriteAction::DeclineFriend { .. } => "Decline",
@@ -438,6 +465,8 @@ pub struct GamesState {
     pub keyword: String,
     pub games: Load<models::GamesBundle>,
     pub selected: Option<usize>,
+    /// Votes for the game in the details window.
+    pub vote: Load<models::GameVoteState>,
 }
 
 #[derive(Default)]
@@ -463,6 +492,8 @@ pub struct ProfileState {
     pub following: Load<bool>,
     /// The status box on your own profile.
     pub status_input: String,
+    /// The description box on your own profile.
+    pub description_input: String,
     /// `Friends`, `NotFriends`, `RequestSent` or `RequestReceived`; other people only.
     pub friendship: Load<String>,
 }
@@ -1188,6 +1219,12 @@ impl App {
                     endpoints::set_messages_archived(&api, &[*message_id], *archive).await
                 }
                 WriteAction::MarkAllRead { ids } => endpoints::mark_all_read(&api, ids).await,
+                WriteAction::VoteGame { universe_id, up, .. } => {
+                    endpoints::vote_game(&api, *universe_id, *up).await
+                }
+                WriteAction::SetDescription { description } => {
+                    endpoints::set_description(&api, description).await
+                }
                 WriteAction::MarkRead { message_id, read, .. } => {
                     endpoints::set_messages_read(&api, &[*message_id], *read).await
                 }
@@ -1293,6 +1330,50 @@ impl App {
                     format!("Moved \"{subject}\" to Archive.")
                 } else {
                     format!("Moved \"{subject}\" back to your inbox.")
+                }
+            }
+            WriteAction::VoteGame { universe_id, name, up, previous } => {
+                let up = *up;
+                // Move the counts the same way the site will.
+                let adjust = |votes_up: &mut u64, votes_down: &mut u64| {
+                    if *previous == Some(!up) {
+                        if up {
+                            *votes_down = votes_down.saturating_sub(1);
+                        } else {
+                            *votes_up = votes_up.saturating_sub(1);
+                        }
+                    }
+                    if *previous != Some(up) {
+                        if up {
+                            *votes_up += 1;
+                        } else {
+                            *votes_down += 1;
+                        }
+                    }
+                };
+                if let Load::Ready(state) = &mut self.games.vote {
+                    adjust(&mut state.up, &mut state.down);
+                    state.user_vote = Some(up);
+                }
+                if let Load::Ready(bundle) = &mut self.games.games {
+                    if let Some(game) = bundle.games.iter_mut().find(|game| game.id == *universe_id) {
+                        adjust(&mut game.votes_up, &mut game.votes_down);
+                    }
+                }
+                let which = if up { "thumbs up" } else { "thumbs down" };
+                format!("Gave \"{name}\" a {which}.")
+            }
+            WriteAction::SetDescription { description } => {
+                let me = self.me_id();
+                if let Load::Ready(bundle) = &mut self.profile.data {
+                    if Some(bundle.user.id) == me {
+                        bundle.user.description = description.clone();
+                    }
+                }
+                if description.trim().is_empty() {
+                    "Description cleared.".to_string()
+                } else {
+                    "Description updated.".to_string()
                 }
             }
             WriteAction::MarkAllRead { ids } => {
@@ -1483,6 +1564,35 @@ impl App {
         cx.spawn(async move {
             Msg::UnreadIds(
                 endpoints::unread_inbox_ids(&api)
+                    .await
+                    .map_err(|error| error.to_string()),
+            )
+        });
+    }
+
+    fn selected_game_id(&self) -> Option<u64> {
+        let index = self.games.selected?;
+        self.games
+            .games
+            .ready()
+            .and_then(|bundle| bundle.games.get(index))
+            .map(|game| game.id)
+    }
+
+    /// Opens a game's details window and loads its votes.
+    pub fn open_game(&mut self, index: usize) {
+        self.games.selected = Some(index);
+        self.games.vote = Load::Busy;
+        let Some(universe) = self.selected_game_id() else {
+            self.games.vote = Load::Idle;
+            return;
+        };
+        let cx = self.cx();
+        let api = cx.api.clone();
+        cx.spawn(async move {
+            Msg::GameVote(
+                universe,
+                endpoints::game_vote_state(&api, universe)
                     .await
                     .map_err(|error| error.to_string()),
             )
@@ -1688,6 +1798,7 @@ impl App {
                     let id = bundle.user.id;
                     if Some(id) == self.me_id() {
                         self.profile.status_input = bundle.status.clone();
+                        self.profile.description_input = bundle.user.description.clone();
                         self.profile.following = Load::Idle;
                     } else {
                         self.load_follow_state(id);
@@ -1729,6 +1840,11 @@ impl App {
                 }
             }
             Msg::Messages(result) => self.messages.data = into_load(result),
+            Msg::GameVote(universe, result) => {
+                if self.selected_game_id() == Some(universe) {
+                    self.games.vote = into_load(result);
+                }
+            }
             Msg::UnreadIds(result) => {
                 self.messages.preparing_all = false;
                 match result {
@@ -1942,6 +2058,14 @@ mod tests {
         assert!(text.starts_with("All 3 unread messages in your inbox"));
         let one = WriteAction::MarkAllRead { ids: vec![7] }.description();
         assert!(one.starts_with("All 1 unread message in your inbox"));
+    }
+
+    #[test]
+    fn vote_summary_mentions_replacing() {
+        let fresh = WriteAction::VoteGame { universe_id: 1, name: "Tower of Hell".into(), up: true, previous: None }.description();
+        assert_eq!(fresh, "Your account gives \"Tower of Hell\" a thumbs up.");
+        let switch = WriteAction::VoteGame { universe_id: 1, name: "Tower of Hell".into(), up: false, previous: Some(true) }.description();
+        assert!(switch.ends_with("This replaces your thumbs up."));
     }
 
     #[test]

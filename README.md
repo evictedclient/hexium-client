@@ -15,7 +15,7 @@ Not affiliated with hexium.wtf or Roblox.
   collectibles, money and transaction history.
 - **Social**: friends and friend requests, messages, trades with full trade details.
 - **Writes**, each behind a confirmation dialog that says exactly what will change:
-  follow / unfollow, favourite / unfavourite, set your status, mark messages read or
+  follow / unfollow, favourite / unfavourite, set your status and description, vote on games, mark messages read or
   unread (or all at once), archive / unarchive messages, send / accept / decline friend requests, unfriend, send private messages
   and replies, accept / decline inbound trades (the dialog lists both sides and
   their RAP totals), list a collectible for sale, change its price or take it off

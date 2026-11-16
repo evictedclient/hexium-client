@@ -1107,3 +1107,64 @@ pub async fn mark_all_read(client: &ApiClient, ids: &[u64]) -> Result<()> {
     }
     Ok(())
 }
+
+/// Counts from `getGameVotes` plus `/v1/games/{id}/votes/user`, which says
+/// whether you may vote and how you already did.
+pub async fn game_vote_state(client: &ApiClient, universe: u64) -> Result<GameVoteState> {
+    let votes_path = api("games", "/v1/games/votes");
+    let votes_query = [("universeIds", universe.to_string())];
+    let user_path = api("games", &format!("/v1/games/{universe}/votes/user"));
+    let (votes, user) = tokio::join!(
+        client.get_query(&votes_path, &votes_query),
+        client.get(&user_path),
+    );
+    let votes = votes?;
+    let entry = first_array(&votes, &["data"])
+        .iter()
+        .find(|entry| num_at(entry, "id") == universe)
+        .cloned()
+        .unwrap_or(Value::Null);
+    let mut state = GameVoteState {
+        up: num_at(&entry, "upVotes"),
+        down: num_at(&entry, "downVotes"),
+        user_vote: entry.get("userVote").and_then(Value::as_bool),
+        can_vote: true,
+        reason: None,
+    };
+    if let Ok(user) = user {
+        if let Some(can) = user.get("canVote").and_then(Value::as_bool) {
+            state.can_vote = can;
+        }
+        if let Some(vote) = user.get("userVote").and_then(Value::as_bool) {
+            state.user_vote = Some(vote);
+        }
+        state.reason = user
+            .get("reasonForNotVoteable")
+            .and_then(Value::as_str)
+            .filter(|reason| !reason.trim().is_empty())
+            .map(str::to_string);
+    }
+    Ok(state)
+}
+
+/// `api-games.js` `voteGame`: PATCH `{ vote: true | false }`.
+pub async fn vote_game(client: &ApiClient, universe: u64, up: bool) -> Result<()> {
+    client
+        .patch(
+            &api("games", &format!("/v1/games/{universe}/user-votes")),
+            Some(json!({ "vote": up })),
+        )
+        .await?;
+    Ok(())
+}
+
+/// `api-account-settings.js` `setDescription`: POST `{ description }`.
+pub async fn set_description(client: &ApiClient, description: &str) -> Result<()> {
+    client
+        .post(
+            &api("accountinformation", "/v1/description"),
+            Some(json!({ "description": description })),
+        )
+        .await?;
+    Ok(())
+}

@@ -966,3 +966,15 @@ pub fn spaced_words(text: &str) -> String {
     }
     out
 }
+
+/// Votes on one game plus whether, and how, you voted.
+#[derive(Debug, Clone, Default)]
+pub struct GameVoteState {
+    pub up: u64,
+    pub down: u64,
+    /// `Some(true)` thumbs up, `Some(false)` thumbs down, `None` no vote.
+    pub user_vote: Option<bool>,
+    pub can_vote: bool,
+    /// Why voting is not allowed, when the site says.
+    pub reason: Option<String>,
+}
