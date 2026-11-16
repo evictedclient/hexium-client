@@ -772,6 +772,20 @@ async fn run_all(client: &ApiClient) -> Vec<Row> {
         };
         rows.push(Row { name: "game/get-join-script", detail, verdict, ms: started.elapsed().as_millis() });
     }
+    if place != 0 {
+        let started = Instant::now();
+        let (verdict, detail) = match endpoints::game_servers(client, place, 0).await {
+            Ok(page) => {
+                let players: usize = page.servers.iter().map(|server| server.players.len()).sum();
+                (
+                    Verdict::Pass,
+                    format!("{} server(s) of {} · {players} player(s)", page.servers.len(), page.total),
+                )
+            }
+            Err(error) => (Verdict::Fail, error.to_string()),
+        };
+        rows.push(Row { name: "games/getgameinstancesjson", detail, verdict, ms: started.elapsed().as_millis() });
+    }
     rows.push(match crate::play::launcher_registered() {
         Some(command) => Row {
             name: "hexium:// launcher",

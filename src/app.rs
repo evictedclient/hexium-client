@@ -141,6 +141,8 @@ pub enum Msg {
     OpenChat(u64),
     /// Play finished: the place and the client year, or why it failed.
     GameLaunched(u64, Res<String>),
+    /// A page of servers: (place, first index asked for, result).
+    GameServers(u64, u64, Res<models::ServerPage>),
     /// A trades / friend requests / messages notification was clicked.
     OpenView(View),
     /// The watcher saw a counter move: refresh the badges.
@@ -578,6 +580,11 @@ pub struct GamesState {
     pub vote: Load<models::GameVoteState>,
     /// The last Play: (place id, how it went). `Busy` while the ticket is fetched.
     pub launch: Option<(u64, Load<String>)>,
+    /// The server the last Play/Join was for (`None` for Play).
+    pub launch_job: Option<String>,
+    /// Running servers of the game in the details window.
+    pub servers: Load<models::ServerPage>,
+    pub servers_more: bool,
 }
 
 #[derive(Default)]
@@ -1535,14 +1542,35 @@ impl App {
     }
 
     /// The Play button: fetch a join ticket and start the Hexium launcher.
-    pub fn play(&mut self, place_id: u64) {
+    pub fn play(&mut self, place_id: u64, job_id: Option<String>) {
         if matches!(self.games.launch, Some((_, Load::Busy))) {
             return;
         }
         self.games.launch = Some((place_id, Load::Busy));
+        self.games.launch_job = job_id.clone();
         let cx = self.cx();
         let api = cx.api.clone();
-        cx.spawn(async move { Msg::GameLaunched(place_id, crate::play::launch(&api, place_id, None).await) });
+        cx.spawn(async move {
+            Msg::GameLaunched(place_id, crate::play::launch(&api, place_id, job_id.as_deref()).await)
+        });
+    }
+
+    /// Servers of a place; `start` 0 replaces the list, more appends.
+    pub fn load_servers(&mut self, place_id: u64, start: u64) {
+        if start == 0 {
+            self.games.servers = Load::Busy;
+        } else {
+            self.games.servers_more = true;
+        }
+        let cx = self.cx();
+        let api = cx.api.clone();
+        cx.spawn(async move {
+            Msg::GameServers(
+                place_id,
+                start,
+                endpoints::game_servers(&api, place_id, start).await.map_err(|error| error.to_string()),
+            )
+        });
     }
 
     fn stop_hub(&mut self) {
@@ -2315,6 +2343,16 @@ impl App {
     pub fn open_game(&mut self, index: usize) {
         self.games.selected = Some(index);
         self.games.vote = Load::Busy;
+        self.games.servers = Load::Idle;
+        let place = self
+            .games
+            .games
+            .ready()
+            .and_then(|bundle| bundle.games.get(index))
+            .and_then(|game| game.place_id);
+        if let Some(place) = place {
+            self.load_servers(place, 0);
+        }
         let Some(universe) = self.selected_game_id() else {
             self.games.vote = Load::Idle;
             return;
@@ -2797,6 +2835,30 @@ impl App {
                 }
             }
             Msg::ActivityChanged => self.load_session(),
+            Msg::GameServers(place, start, result) => {
+                let showing = match &self.games.servers {
+                    Load::Ready(page) => Some(page.place_id),
+                    _ => None,
+                };
+                if start == 0 {
+                    self.games.servers = into_load(result);
+                } else if showing == Some(place) {
+                    self.games.servers_more = false;
+                    match result {
+                        Ok(more) => {
+                            if let Load::Ready(page) = &mut self.games.servers {
+                                for server in more.servers {
+                                    if !page.servers.iter().any(|old| old.job_id == server.job_id) {
+                                        page.servers.push(server);
+                                    }
+                                }
+                                page.total = more.total;
+                            }
+                        }
+                        Err(error) => self.notice = Some((false, format!("Could not load more servers: {error}"))),
+                    }
+                }
+            }
             Msg::GameLaunched(place, result) => {
                 if self.games.launch.as_ref().map(|(id, _)| *id) == Some(place) {
                     self.games.launch = Some((place, into_load(result)));

@@ -1390,3 +1390,24 @@ pub async fn chat_send(client: &ApiClient, conversation: u64, text: &str) -> Res
     }
     Ok(ChatMessage::from_value(&value))
 }
+
+// ---------------------------------------------------------------------------
+// Game servers
+// ---------------------------------------------------------------------------
+
+/// `getGameInstances` in `api-games.js`: running servers of a place, a page at a
+/// time from `start`.
+pub async fn game_servers(client: &ApiClient, place: u64, start: u64) -> Result<ServerPage> {
+    let query = [("placeId", place.to_string()), ("startIndex", start.to_string())];
+    let value = client.get_query("/games/getgameinstancesjson", &query).await?;
+    let servers: Vec<GameServer> = arr_at(&value, "Collection")
+        .iter()
+        .map(GameServer::from_value)
+        .filter(|server| !server.job_id.is_empty())
+        .collect();
+    Ok(ServerPage {
+        place_id: place,
+        total: opt_num_at(&value, "TotalCollectionSize").unwrap_or(servers.len() as u64),
+        servers,
+    })
+}

@@ -1152,3 +1152,87 @@ mod chat_tests {
         assert_eq!((message.id.as_str(), message.sender_id, message.content.as_str()), ("c0ffee-1234", 2, "hey"));
     }
 }
+
+// ---------------------------------------------------------------------------
+// Game servers (`/games/getgameinstancesjson`, the old Roblox shape)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Default)]
+pub struct ServerPlayer {
+    pub id: u64,
+    pub name: String,
+    pub headshot: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct GameServer {
+    pub job_id: String,
+    pub capacity: u64,
+    pub players: Vec<ServerPlayer>,
+    pub ping: u64,
+    pub fps: u64,
+    pub can_join: bool,
+}
+
+impl GameServer {
+    pub fn from_value(value: &Value) -> Self {
+        let job_id = optional_text(value, &["jobId", "JobId", "Guid"]).unwrap_or_default();
+        let players = arr_at(value, "CurrentPlayers")
+            .iter()
+            .map(|player| ServerPlayer {
+                id: num_at(player, "Id"),
+                name: str_at(player, "Username"),
+                headshot: player
+                    .get("Thumbnail")
+                    .and_then(|thumbnail| thumbnail.get("Url"))
+                    .and_then(Value::as_str)
+                    .filter(|url| !url.is_empty())
+                    .map(str::to_string),
+            })
+            .collect();
+        Self {
+            job_id,
+            capacity: num_at(value, "Capacity"),
+            players,
+            ping: num_at(value, "Ping"),
+            fps: num_at(value, "Fps"),
+            // Missing means the site did not say no.
+            can_join: value.get("UserCanJoin").and_then(Value::as_bool).unwrap_or(true),
+        }
+    }
+
+    pub fn is_full(&self) -> bool {
+        self.capacity > 0 && self.players.len() as u64 >= self.capacity
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ServerPage {
+    pub place_id: u64,
+    pub servers: Vec<GameServer>,
+    pub total: u64,
+}
+
+#[cfg(test)]
+mod server_tests {
+    use super::*;
+
+    /// The live shape of one `Collection` entry (values made up).
+    #[test]
+    fn parses_a_server() {
+        let value: Value = serde_json::from_str(
+            r#"{"Guid":"g-1","jobId":"job-1","PlaceId":5,"Capacity":6,"Ping":77,"Fps":60,
+                "UserCanJoin":true,"PlayersCapacity":"2 of 6","JoinScript":null,
+                "CurrentPlayers":[{"Id":36,"Username":"A","Thumbnail":{"IsFinal":true,"Url":"https://x/a.png"}},
+                                  {"Id":245,"Username":"B","Thumbnail":{"IsFinal":true,"Url":""}}]}"#,
+        )
+        .unwrap();
+        let server = GameServer::from_value(&value);
+        assert_eq!(server.job_id, "job-1");
+        assert_eq!((server.capacity, server.ping, server.fps), (6, 77, 60));
+        assert_eq!(server.players.len(), 2);
+        assert_eq!(server.players[0].headshot.as_deref(), Some("https://x/a.png"));
+        assert!(server.players[1].headshot.is_none());
+        assert!(server.can_join && !server.is_full());
+    }
+}

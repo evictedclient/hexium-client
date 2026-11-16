@@ -201,12 +201,19 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
                         .fill(accent())
                         .min_size(egui::vec2(96.0, 30.0));
                         if ui.add_enabled(!busy, button).clicked() {
-                            app.play(place);
+                            app.play(place, None);
                         }
                         match state {
                             Some(Load::Busy) => {
                                 ui.add(egui::Spinner::new().size(14.0).color(accent()));
-                                muted(ui, "Getting a join ticket…");
+                                muted(
+                                    ui,
+                                    if app.games.launch_job.is_some() {
+                                        "Getting a ticket for that server…"
+                                    } else {
+                                        "Getting a join ticket…"
+                                    },
+                                );
                             }
                             Some(Load::Ready(year)) => {
                                 muted(ui, &format!("Launching the {year} client. It opens in its own window."));
@@ -217,6 +224,8 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
                             _ => {}
                         }
                     });
+                    ui.add_space(6.0);
+                    servers(app, cx, ui, place);
                     ui.add_space(6.0);
                 }
                 ui.horizontal(|ui| {
@@ -240,5 +249,118 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
             app.games.selected = None;
             app.games.vote = Load::Idle;
         }
+    }
+}
+
+/// Running servers of the place, each with its players and a Join button.
+fn servers(app: &mut App, cx: &Ctx, ui: &mut Ui, place: u64) {
+    ui.horizontal(|ui| {
+        ui::eyebrow(ui, "Servers");
+        if let Load::Ready(page) = &app.games.servers {
+            muted(ui, &format!("{} running", page.total));
+        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let loading = matches!(app.games.servers, Load::Busy);
+            if ui.add_enabled(!loading, egui::Button::new("Refresh").small()).clicked() {
+                app.load_servers(place, 0);
+            }
+        });
+    });
+
+    let page = match app.games.servers.clone() {
+        Load::Ready(page) if page.place_id == place => page,
+        Load::Err(error) => {
+            failed(ui, &format!("Could not load servers: {error}"));
+            return;
+        }
+        Load::Busy => {
+            waiting(ui, "servers");
+            return;
+        }
+        _ => return,
+    };
+    if page.servers.is_empty() {
+        muted(ui, "Nobody is playing right now. Play starts a new server.");
+        return;
+    }
+
+    let busy = matches!(app.games.launch, Some((_, Load::Busy)));
+    let mut join: Option<String> = None;
+    let mut profile: Option<u64> = None;
+    egui::ScrollArea::vertical()
+        .id_salt(("servers", place))
+        .max_height(230.0)
+        .auto_shrink([false, true])
+        .show(ui, |ui| {
+            for server in &page.servers {
+                egui::Frame::none()
+                    .fill(ui::card())
+                    .stroke(egui::Stroke::new(1.0, ui::line()))
+                    .rounding(egui::Rounding::same(8.0))
+                    .inner_margin(egui::Margin::symmetric(8.0, 6.0))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.horizontal(|ui| {
+                            ui.vertical(|ui| {
+                                let count = if server.capacity > 0 {
+                                    format!("{} of {}", server.players.len(), server.capacity)
+                                } else {
+                                    format!("{} playing", server.players.len())
+                                };
+                                ui.label(RichText::new(count).font(ui::semibold(13.0)));
+                                ui.label(
+                                    RichText::new(format!("{} ms · {} fps", server.ping, server.fps))
+                                        .size(10.5)
+                                        .color(MUTED),
+                                );
+                            });
+                            ui.add_space(6.0);
+                            for player in server.players.iter().take(8) {
+                                let face = app
+                                    .thumbs
+                                    .show(ui, cx, player.headshot.as_deref(), egui::vec2(24.0, 24.0))
+                                    .interact(egui::Sense::click())
+                                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                    .on_hover_text(&player.name);
+                                if face.clicked() && player.id != 0 {
+                                    profile = Some(player.id);
+                                }
+                            }
+                            if server.players.len() > 8 {
+                                muted(ui, &format!("+{}", server.players.len() - 8));
+                            }
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                let mine = app.games.launch_job.as_deref() == Some(server.job_id.as_str());
+                                let label = if busy && mine { "Joining…" } else { "Join" };
+                                let open = server.can_join && !server.is_full();
+                                let response = ui.add_enabled(!busy && open, egui::Button::new(label));
+                                let response = if !server.can_join {
+                                    response.on_disabled_hover_text("The site says you cannot join this server.")
+                                } else if server.is_full() {
+                                    response.on_disabled_hover_text("This server is full.")
+                                } else {
+                                    response
+                                };
+                                if response.clicked() {
+                                    join = Some(server.job_id.clone());
+                                }
+                            });
+                        });
+                    });
+                ui.add_space(3.0);
+            }
+            if (page.servers.len() as u64) < page.total {
+                if app.games.servers_more {
+                    waiting(ui, "more servers");
+                } else if ui.button("Load more").clicked() {
+                    app.load_servers(place, page.servers.len() as u64);
+                }
+            }
+        });
+    if let Some(job) = join {
+        app.play(place, Some(job));
+    }
+    if let Some(id) = profile {
+        app.open_profile(id);
     }
 }
