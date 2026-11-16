@@ -121,6 +121,19 @@ pub fn show(app: &mut App, _cx: &Ctx, ui: &mut Ui) {
             app.cfg.save();
         }
         muted(ui, "Shown when a message arrives while the client is in the background or you are on another screen or chat. Needs the live connection.");
+        ui.add_space(6.0);
+        let mut at_sign_in = app.autostart != crate::autostart::State::Off;
+        if ui.checkbox(&mut at_sign_in, "Open at sign-in").changed() {
+            app.set_autostart(at_sign_in);
+        }
+        muted(ui, "Starts the client minimised when you log into Windows, so chat notifications arrive without opening it.");
+        if app.autostart == crate::autostart::State::DisabledInTaskManager {
+            ui.label(
+                RichText::new("Switched off in Task Manager > Startup apps. Turn it back on there for it to run.")
+                    .size(12.0)
+                    .color(ui::GOLD),
+            );
+        }
     });
 
 

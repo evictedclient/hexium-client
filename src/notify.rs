@@ -30,6 +30,23 @@ pub struct Gate {
 
 pub type SharedGate = Arc<Mutex<Gate>>;
 
+/// Learns names (and group titles) from the chat list.
+pub fn learn(gate: &mut Gate, bundle: &crate::api::models::ChatBundle, me: u64) {
+    for conversation in &bundle.conversations {
+        for participant in &conversation.participants {
+            if !participant.name.is_empty() {
+                gate.names.insert(participant.id, participant.name.clone());
+            }
+        }
+        if conversation.participants.len() > 2 {
+            gate.groups.insert(conversation.id, conversation.label(me));
+        }
+    }
+    for friend in &bundle.friends {
+        gate.names.entry(friend.id).or_insert_with(|| friend.name.clone());
+    }
+}
+
 /// What a toast would say, or `None` when no toast should show.
 pub fn decide(
     gate: &mut Gate,

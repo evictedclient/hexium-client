@@ -2,6 +2,7 @@
 
 mod api;
 mod app;
+mod autostart;
 mod check;
 mod config;
 mod icon;
@@ -39,6 +40,7 @@ fn main() -> eframe::Result<()> {
         println!("hexium client");
         println!("  (no arguments)   start the desktop client");
         println!("  --check          hit every read endpoint once and report what parsed");
+        println!("  --minimized      start minimised (what \"Open at sign-in\" uses)");
         println!("  --register       add the Start menu shortcut that gives notifications their name and icon");
         println!("  --help           this text");
         return Ok(());
@@ -49,6 +51,10 @@ fn main() -> eframe::Result<()> {
         instance::wake_existing();
         return Ok(());
     }
+
+    let start_minimized = arguments.iter().any(|argument| argument == "--minimized");
+    // Keep an existing sign-in entry pointing at this exe.
+    autostart::refresh();
 
     let mut config = config::load();
     // Own name and icon for notifications. Best effort: without it, toasts fall
@@ -84,7 +90,7 @@ fn main() -> eframe::Result<()> {
         Box::new(move |cc| {
             egui_extras::install_image_loaders(&cc.egui_ctx);
             ui::install_fonts(&cc.egui_ctx);
-            Ok(Box::new(app::App::new(cc, config, api, runtime)))
+            Ok(Box::new(app::App::new(cc, config, api, runtime, start_minimized)))
         }),
     )
 }

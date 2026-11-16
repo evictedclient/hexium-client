@@ -755,6 +755,10 @@ pub struct App {
     notify_gate: crate::notify::SharedGate,
     /// The native window handle, for raising the window from a toast click.
     hwnd: Arc<AtomicIsize>,
+    /// Started at sign-in with `--minimized`: minimise on the first frame.
+    start_minimized: bool,
+    /// The "Open at sign-in" entry, as Windows has it.
+    pub autostart: crate::autostart::State,
     refreshed_at: Instant,
     last_resize_check: Instant,
 }
@@ -765,6 +769,7 @@ impl App {
         cfg: Config,
         api: Arc<ApiClient>,
         runtime: tokio::runtime::Runtime,
+        start_minimized: bool,
     ) -> Self {
         let (tx, rx) = mpsc::channel();
         let rt = runtime.handle().clone();
@@ -804,13 +809,21 @@ impl App {
             chat: ChatState::default(),
             hub: None,
             notify_gate: Default::default(),
+            start_minimized,
+            autostart: crate::autostart::state(),
             hwnd: Arc::new(AtomicIsize::new(0)),
             refreshed_at: Instant::now(),
             last_resize_check: Instant::now(),
         };
+        if let Ok(mut gate) = app.notify_gate.lock() {
+            gate.enabled = app.cfg.chat_notifications;
+        }
         if app.api.has_session() {
             app.load_session();
             app.load_banners();
+            // Not waiting for the first frame: started minimised at sign-in, the
+            // window may not draw until it is opened.
+            app.start_hub();
         }
         app
     }
@@ -1352,28 +1365,68 @@ impl App {
         let hwnd = self.hwnd.clone();
         let click_tx = self.tx.clone();
         let click_egui = self.egui.clone();
+        let rt = self.rt.clone();
+        let api = self.api.clone();
+        self.prime_notify_gate();
         self.hub = Some(hub::spawn(&self.rt, self.api.clone(), move |event| {
             // Decided here rather than in the UI loop, which may be asleep while
             // the window is minimised.
             if let HubEvent::Message { conversation_id, user_id, content, .. } = &event {
-                let toast = gate.lock().ok().and_then(|mut gate| {
-                    crate::notify::decide(&mut gate, *conversation_id, *user_id, content, Instant::now())
-                });
-                if let Some((title, body)) = toast {
-                    let conversation = *conversation_id;
-                    let (hwnd, tx, egui) = (hwnd.clone(), click_tx.clone(), click_egui.clone());
-                    crate::notify::show(title, body, move || {
-                        crate::notify::bring_to_front(hwnd.load(Ordering::Relaxed));
-                        if tx.send(Msg::OpenChat(conversation)).is_ok() {
-                            egui.request_repaint();
+                let (conversation, sender, content) = (*conversation_id, *user_id, content.clone());
+                let (gate, api) = (gate.clone(), api.clone());
+                let (hwnd, tx, egui) = (hwnd.clone(), click_tx.clone(), click_egui.clone());
+                rt.spawn(async move {
+                    // Someone the list has not named yet: look them up first.
+                    let known = gate.lock().map(|gate| gate.names.contains_key(&sender)).unwrap_or(true);
+                    if !known && sender != 0 {
+                        if let Ok(user) = endpoints::user(&api, sender).await {
+                            if let Ok(mut gate) = gate.lock() {
+                                gate.names.insert(sender, user.name);
+                            }
                         }
+                    }
+                    let toast = gate.lock().ok().and_then(|mut gate| {
+                        crate::notify::decide(&mut gate, conversation, sender, &content, Instant::now())
                     });
-                }
+                    if let Some((title, body)) = toast {
+                        crate::notify::show(title, body, move || {
+                            crate::notify::bring_to_front(hwnd.load(Ordering::Relaxed));
+                            if tx.send(Msg::OpenChat(conversation)).is_ok() {
+                                egui.request_repaint();
+                            }
+                        });
+                    }
+                });
             }
             if tx.send(Msg::Hub(event)).is_ok() {
                 egui.request_repaint();
             }
         }));
+    }
+
+    /// Fills in who you are and everyone's names for notifications, without
+    /// waiting for the UI to load them.
+    fn prime_notify_gate(&mut self) {
+        let (gate, api) = (self.notify_gate.clone(), self.api.clone());
+        self.rt.spawn(async move {
+            let Ok(user) = endpoints::authenticated_user(&api).await else { return };
+            if let Ok(mut gate) = gate.lock() {
+                gate.me = user.id;
+            }
+            if let Ok(bundle) = endpoints::chat_bundle(&api, user.id).await {
+                if let Ok(mut gate) = gate.lock() {
+                    crate::notify::learn(&mut gate, &bundle, user.id);
+                }
+            }
+        });
+    }
+
+    /// Settings: turn "Open at sign-in" on or off.
+    pub fn set_autostart(&mut self, enabled: bool) {
+        if let Err(error) = crate::autostart::set(enabled) {
+            self.notice = Some((false, error));
+        }
+        self.autostart = crate::autostart::state();
     }
 
     fn stop_hub(&mut self) {
@@ -1566,7 +1619,9 @@ impl App {
         let me = self.me_id().unwrap_or(0);
         if let Ok(mut gate) = self.notify_gate.lock() {
             gate.enabled = self.cfg.chat_notifications;
-            gate.me = me;
+            if me != 0 {
+                gate.me = me;
+            }
             gate.focused = focused && !minimized;
             gate.watching = watching;
         }
@@ -2515,19 +2570,7 @@ impl App {
                 Ok(bundle) => {
                     if let Ok(mut gate) = self.notify_gate.lock() {
                         let me = self.session.ready().map(|session| session.user.id).unwrap_or(0);
-                        for conversation in &bundle.conversations {
-                            for participant in &conversation.participants {
-                                if !participant.name.is_empty() {
-                                    gate.names.insert(participant.id, participant.name.clone());
-                                }
-                            }
-                            if conversation.participants.len() > 2 {
-                                gate.groups.insert(conversation.id, conversation.label(me));
-                            }
-                        }
-                        for friend in &bundle.friends {
-                            gate.names.entry(friend.id).or_insert_with(|| friend.name.clone());
-                        }
+                        crate::notify::learn(&mut gate, &bundle, me);
                     }
                     self.chat.list = Load::Ready(bundle);
                     if let Some(id) = self.chat.open_conversation() {
@@ -2631,6 +2674,10 @@ impl eframe::App for App {
             self.apply(message);
         }
 
+        if self.start_minimized {
+            self.start_minimized = false;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+        }
         self.sync_notify_gate(ctx);
 
         let wanted = format!("{}/{}", self.cfg.theme, self.cfg.accent);
