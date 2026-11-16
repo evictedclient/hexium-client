@@ -101,6 +101,20 @@ pub fn show(app: &mut App, _cx: &Ctx, ui: &mut Ui) {
         });
     });
 
+    h2(ui, "Chat");
+    ui::tile(ui, 620.0, |ui| {
+        if ui
+            .checkbox(&mut app.cfg.share_typing, "Show people when I am typing")
+            .changed()
+        {
+            app.cfg.save();
+            if !app.cfg.share_typing {
+                app.stop_typing();
+            }
+        }
+        muted(ui, "While on, the other person sees a typing indicator as you write, the same as on the site.");
+    });
+
 
     h2(ui, "What this client talks to");
     ui::tile(ui, 620.0, |ui| {

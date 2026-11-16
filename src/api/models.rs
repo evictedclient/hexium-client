@@ -1071,7 +1071,14 @@ impl ChatConversation {
             .map(ChatMessage::from_value);
         Self {
             id: num_at(value, "id"),
-            title: str_at(value, "title"),
+            // `title` is null on this site; the name shown is `titleForViewer`.
+            title: value
+                .get("conversationTitle")
+                .and_then(|title| title.get("titleForViewer"))
+                .and_then(Value::as_str)
+                .filter(|title| !title.trim().is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| str_at(value, "title")),
             kind: str_at(value, "conversationType"),
             participants,
             unread: bool_at(value, "hasUnreadMessages"),
@@ -1115,4 +1122,33 @@ pub struct ChatBundle {
     pub icons: HashMap<u64, String>,
     /// From `chat-settings`; `false` means the site has chat switched off for you.
     pub chat_enabled: bool,
+}
+
+#[cfg(test)]
+mod chat_tests {
+    use super::*;
+
+    /// The shape `get-user-conversations` and `get-messages` really return
+    /// (values made up).
+    #[test]
+    fn parses_the_live_chat_shapes() {
+        let conversation: Value = serde_json::from_str(
+            r#"{"id":12,"title":null,"conversationTitle":{"titleForViewer":"Friend","isDefaultTitle":true},
+                "conversationType":"OneToOneConversation","conversationUniverse":null,"hasUnreadMessages":true,
+                "participants":[{"type":"User","targetId":1,"name":"Me"},{"type":"User","targetId":2,"name":"Friend"}]}"#,
+        )
+        .unwrap();
+        let conversation = ChatConversation::from_value(&conversation);
+        assert_eq!(conversation.id, 12);
+        assert_eq!(conversation.label(1), "Friend");
+        assert_eq!(conversation.other(1).map(|other| other.id), Some(2));
+        assert!(conversation.unread);
+
+        let message: Value = serde_json::from_str(
+            r#"{"id":"c0ffee-1234","sent":"2026-11-16T19:00:00Z","read":false,"senderTargetId":2,"content":"hey","messageType":"PlainText"}"#,
+        )
+        .unwrap();
+        let message = ChatMessage::from_value(&message);
+        assert_eq!((message.id.as_str(), message.sender_id, message.content.as_str()), ("c0ffee-1234", 2, "hey"));
+    }
 }

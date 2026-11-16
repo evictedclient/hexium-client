@@ -1242,12 +1242,37 @@ pub async fn chat_bundle(client: &ApiClient, me: u64) -> Result<ChatBundle> {
         client.get(&settings_path),
         friends(client, me),
     );
-    let conversations: Vec<ChatConversation> =
+    let mut conversations: Vec<ChatConversation> =
         first_array(&conversations?, &["data", "conversations"])
             .iter()
             .map(ChatConversation::from_value)
             .filter(|conversation| conversation.id != 0)
             .collect();
+
+    // The list carries no previews; the site fetches them separately.
+    if !conversations.is_empty() {
+        let ids: Vec<String> = conversations.iter().map(|conversation| conversation.id.to_string()).collect();
+        let path = api("chat", "/v2/multi-get-latest-messages");
+        let query = [("conversationIds", ids.join(",")), ("pageSize", "1".to_string())];
+        if let Ok(value) = client.get_query(&path, &query).await {
+            for entry in first_array(&value, &["data"]) {
+                let id = num_at(entry, "conversationId");
+                let latest = arr_at(entry, "chatMessages").first().map(ChatMessage::from_value);
+                if let Some(conversation) = conversations.iter_mut().find(|conversation| conversation.id == id) {
+                    if latest.is_some() {
+                        conversation.latest = latest;
+                    }
+                }
+            }
+        }
+        // Newest first, as on the site.
+        conversations.sort_by(|a, b| {
+            let when = |conversation: &ChatConversation| {
+                conversation.latest.as_ref().map(|latest| latest.sent.clone()).unwrap_or_default()
+            };
+            when(b).cmp(&when(a))
+        });
+    }
     // Default to enabled when the settings call fails: the list still loaded.
     let chat_enabled = settings
         .ok()
@@ -1313,6 +1338,18 @@ pub async fn chat_mark_read(client: &ApiClient, conversation: u64, end_message: 
         .post(
             &api("chat", "/v2/mark-as-read"),
             Some(json!({ "conversationId": conversation, "endMessageId": end })),
+        )
+        .await?;
+    Ok(())
+}
+
+/// `update-user-typing-status`: the site sends `isTyping: true` once a second
+/// while you type and never sends `false`; the other side times it out.
+pub async fn chat_typing(client: &ApiClient, conversation: u64) -> Result<()> {
+    client
+        .post(
+            &api("chat", "/v2/update-user-typing-status"),
+            Some(json!({ "isTyping": true, "conversationId": conversation })),
         )
         .await?;
     Ok(())

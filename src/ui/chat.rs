@@ -388,6 +388,9 @@ fn thread(
                 .char_limit(MAX_LENGTH)
                 .desired_width(ui.available_width() - 120.0);
             let response = ui.add_enabled(enabled, editor);
+            if response.changed() && !app.chat.draft.is_empty() {
+                app.note_typing();
+            }
             let text = app.chat.draft.trim().to_string();
             let ready = enabled && !text.is_empty() && (conversation_id.is_some() || recipient_id != 0);
             let enter = response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
@@ -407,6 +410,8 @@ fn thread(
     });
 
     if let Some(action) = ask {
+        // Pressing send ends the typing broadcast, as Enter does on the site.
+        app.stop_typing();
         app.ask(action);
     }
     if let Some(id) = open_profile {

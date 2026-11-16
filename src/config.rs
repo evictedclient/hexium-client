@@ -22,6 +22,13 @@ pub struct Config {
     pub window_width: f32,
     #[serde(default = "default_height")]
     pub window_height: f32,
+    /// Tell the other person in a chat when you are typing, as the site does.
+    #[serde(default = "default_true")]
+    pub share_typing: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn default_width() -> f32 {
@@ -53,6 +60,7 @@ impl Default for Config {
             accent: default_accent(),
             window_width: default_width(),
             window_height: default_height(),
+            share_typing: true,
         }
     }
 }

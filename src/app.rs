@@ -686,6 +686,11 @@ pub struct ChatState {
     listed_at: Option<Instant>,
     /// Bumped when new messages arrive, so the view scrolls to the bottom.
     pub arrivals: u64,
+    /// Your own typing broadcast: the conversation, when the last key was
+    /// pressed, and when `isTyping` was last sent.
+    typing_in: Option<u64>,
+    last_key: Option<Instant>,
+    typing_sent: Option<Instant>,
 }
 
 impl ChatState {
@@ -1372,6 +1377,7 @@ impl App {
         if self.chat.target.as_ref() == Some(&target) {
             return;
         }
+        self.stop_typing();
         self.chat.draft.clear();
         self.chat.messages = match &target {
             ChatTarget::Conversation(_) => Load::Busy,
@@ -1523,11 +1529,57 @@ impl App {
         }
     }
 
+    /// A key was pressed in the composer. Like the site, only conversations that
+    /// already exist get typing updates.
+    pub fn note_typing(&mut self) {
+        if !self.cfg.share_typing {
+            return;
+        }
+        let Some(id) = self.chat.open_conversation() else { return };
+        if self.chat.typing_in != Some(id) {
+            self.chat.typing_sent = None;
+        }
+        self.chat.typing_in = Some(id);
+        self.chat.last_key = Some(Instant::now());
+        self.broadcast_typing();
+    }
+
+    /// The message went out or the conversation changed: stop broadcasting.
+    pub fn stop_typing(&mut self) {
+        self.chat.typing_in = None;
+        self.chat.last_key = None;
+        self.chat.typing_sent = None;
+    }
+
+    /// Sends `isTyping` at most once a second until 3 s after the last key,
+    /// the site's own timings.
+    fn broadcast_typing(&mut self) {
+        let (Some(id), Some(last_key)) = (self.chat.typing_in, self.chat.last_key) else { return };
+        if last_key.elapsed() >= Duration::from_secs(3)
+            || self.view != View::Chat
+            || self.chat.open_conversation() != Some(id)
+            || !self.cfg.share_typing
+        {
+            self.stop_typing();
+            return;
+        }
+        if self.chat.typing_sent.is_some_and(|at| at.elapsed() < Duration::from_secs(1)) {
+            return;
+        }
+        self.chat.typing_sent = Some(Instant::now());
+        let api = self.api.clone();
+        self.rt.spawn(async move {
+            // Best effort, as on the site: a missed update only hides the dots.
+            let _ = endpoints::chat_typing(&api, id).await;
+        });
+    }
+
     /// Polling the site itself uses (6 s for the open conversation, 60 s for the
     /// list). While the hub is live the open conversation is only checked every
     /// 30 s, as a safety net.
     fn poll_chat(&mut self) {
         let Some(me) = self.me_id() else { return };
+        self.broadcast_typing();
         let live = self.chat.hub_live();
         if self.view == View::Chat {
             if let Some(id) = self.chat.open_conversation() {
