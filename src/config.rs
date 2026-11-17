@@ -49,6 +49,9 @@ pub struct Config {
     /// Deals already notified: (asset, price). Kept short.
     #[serde(default)]
     pub seen_deals: Vec<(u64, u64)>,
+    /// Your own item values: they replace Heximons' or add missing ones.
+    #[serde(default)]
+    pub value_overrides: Vec<ValueOverride>,
     /// Text size (1.0 = normal).
     #[serde(default = "default_scale")]
     pub ui_scale: f32,
@@ -116,6 +119,7 @@ impl Default for Config {
             deal_alert_high_demand: false,
             seen_deals: Vec::new(),
             ui_scale: default_scale(),
+            value_overrides: Vec::new(),
             compact: false,
             shortcut_exe: None,
         }
@@ -195,4 +199,12 @@ pub struct WatchItem {
     pub asset_id: u64,
     pub name: String,
     pub target: u64,
+}
+
+/// A value you set for an item.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ValueOverride {
+    pub asset_id: u64,
+    pub name: String,
+    pub value: u64,
 }

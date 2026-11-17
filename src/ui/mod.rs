@@ -14,6 +14,7 @@ pub mod market;
 pub mod friends;
 pub mod games;
 pub mod groups;
+pub mod helpers;
 pub mod home;
 pub mod inventory;
 pub mod messages;

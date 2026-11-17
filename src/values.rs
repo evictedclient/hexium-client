@@ -56,6 +56,12 @@ pub struct ItemValue {
     /// Thumbnail on hexium.wtf's image server.
     #[serde(default)]
     pub thumb: Option<String>,
+    /// The value is one you set, not Heximons'.
+    #[serde(default)]
+    pub overridden: bool,
+    /// Heximons' own value when yours replaces it.
+    #[serde(default)]
+    pub heximons_value: Option<u64>,
 }
 
 impl ItemValue {
@@ -146,6 +152,8 @@ pub fn parse(html: &str) -> Result<HashMap<u64, ItemValue>, String> {
                 rare: number(at(field::RARE)) == Some(1),
                 best_price: number(at(field::BEST_PRICE)).filter(|price| *price > 0),
                 thumb: at(field::THUMB).as_str().filter(|url| url.starts_with("https://")).map(str::to_string),
+                overridden: false,
+                heximons_value: None,
             },
         );
     }
@@ -784,5 +792,49 @@ mod page_tests {
             (1, 12, "Big & Rich", 350_731, 276_588)
         );
         assert_eq!(rows[1].name, "Second");
+    }
+}
+
+/// Heximons' values with yours on top: `(asset, name, value)` replaces an
+/// item's value, or adds the item when Heximons does not track it.
+pub fn with_overrides<'a>(raw: &Values, overrides: impl IntoIterator<Item = (u64, &'a str, u64)>) -> Values {
+    let mut merged = raw.clone();
+    for (asset, name, value) in overrides {
+        if value == 0 {
+            continue;
+        }
+        let item = merged.items.entry(asset).or_insert_with(|| ItemValue {
+            name: name.to_string(),
+            ..Default::default()
+        });
+        if !item.overridden {
+            item.heximons_value = item.staff_value.or((item.value > 0).then_some(item.value));
+        }
+        item.value = value;
+        item.staff_value = Some(value);
+        item.overridden = true;
+    }
+    merged
+}
+
+#[cfg(test)]
+mod override_tests {
+    use super::*;
+
+    #[test]
+    fn overrides_replace_or_add() {
+        let mut raw = Values::default();
+        raw.items.insert(1, ItemValue { name: "Tracked".to_string(), rap: 100, value: 500, staff_value: Some(500), ..Default::default() });
+        raw.items.insert(2, ItemValue { name: "Rap only".to_string(), rap: 80, value: 80, ..Default::default() });
+        let merged = with_overrides(&raw, [(1, "Tracked", 900), (3, "Untracked", 40), (2, "Rap only", 0)]);
+        let tracked = merged.get(1).unwrap();
+        assert_eq!((tracked.value, tracked.overridden, tracked.heximons_value), (900, true, Some(500)));
+        let added = merged.get(3).unwrap();
+        assert_eq!((added.name.as_str(), added.value, added.heximons_value), ("Untracked", 40, None));
+        // A zero override is ignored.
+        assert!(!merged.get(2).unwrap().overridden);
+        // The raw values are untouched.
+        assert_eq!(raw.get(1).unwrap().value, 500);
+        assert_eq!(merged.value_or(3, 10), 40);
     }
 }

@@ -16,7 +16,7 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
     let mut picked: Option<&str> = None;
     ui.horizontal(|ui| {
         for (tab, label) in TRADE_TABS {
-            let on = current == tab && !app.trades.show_stats;
+            let on = current == tab && !app.trades.show_stats && !app.trades.show_helpers;
             if ui.selectable_label(on, label).clicked() && !on {
                 picked = Some(tab);
             }
@@ -24,16 +24,26 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
         ui.add_space(10.0);
         if ui.selectable_label(app.trades.show_stats, "Stats").clicked() {
             app.trades.show_stats = !app.trades.show_stats;
+            app.trades.show_helpers = false;
+        }
+        if ui.selectable_label(app.trades.show_helpers, "Trade helpers").clicked() {
+            app.trades.show_helpers = !app.trades.show_helpers;
+            app.trades.show_stats = false;
         }
     });
     if let Some(tab) = picked {
         app.trades.show_stats = false;
+        app.trades.show_helpers = false;
         app.trades.tab = tab.to_string();
         app.reload_trades();
     }
     ui.add_space(4.0);
     if app.trades.show_stats {
         stats(app, ui);
+        return;
+    }
+    if app.trades.show_helpers {
+        crate::ui::helpers::show(app, cx, ui);
         return;
     }
 

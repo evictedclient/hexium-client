@@ -156,6 +156,9 @@ pub fn dock(app: &mut App, cx: &Ctx, ctx: &egui::Context) {
                     if detail.limited && ui.link(RichText::new("View on Heximons").size(11.5)).clicked() {
                         cx.open(&crate::values::item_url(detail.id));
                     }
+                    if detail.limited {
+                        own_value(app, ui, detail.id, &detail.name);
+                    }
                     if detail.resold {
                         ui.label(RichText::new(resale_text(&detail)).color(GOLD));
                     } else if let Some(price) = detail.price {
@@ -584,4 +587,31 @@ fn owners(app: &mut App, ui: &mut Ui, asset: u64) {
         Load::Err(error) => failed(ui, &format!("Could not load owners: {error}")),
         _ => waiting(ui, "owners"),
     }
+}
+
+/// Your own value for this item: replaces Heximons' (or adds one) everywhere.
+fn own_value(app: &mut App, ui: &mut Ui, asset: u64, name: &str) {
+    let current = app.cfg.value_overrides.iter().find(|own| own.asset_id == asset).map(|own| own.value);
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Your value").size(12.0));
+        app.catalog.override_input.retain(|character| character.is_ascii_digit());
+        let response = ui.add(
+            egui::TextEdit::singleline(&mut app.catalog.override_input)
+                .hint_text("R$")
+                .char_limit(10)
+                .desired_width(80.0),
+        );
+        let typed: Option<u64> = app.catalog.override_input.parse().ok().filter(|value| *value > 0);
+        let enter = response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+        let changed = typed.is_some() && typed != current;
+        if (ui.add_enabled(changed, egui::Button::new("Set")).clicked() || (enter && changed)) && typed.is_some() {
+            app.set_override(asset, name, typed);
+        }
+        if current.is_some() && ui.button("Clear").on_hover_text("Use Heximons' value again").clicked() {
+            app.set_override(asset, name, None);
+            app.catalog.override_input.clear();
+        }
+    })
+    .response
+    .on_hover_text("Used for totals, trade verdicts, Deals and suggestions instead of Heximons' value.");
 }

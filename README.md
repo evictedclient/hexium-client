@@ -73,11 +73,13 @@ Not affiliated with hexium.wtf or Roblox.
 - **Charts**: 1D / 1W / 1M / All ranges with the change over the range.
 - **Profit and loss**: what you paid for each collectible (from your purchases) against
   its value now, and a total.
-- **Trade tools**: Suggest my side (closest value match), trade stats over your last 40
-  completed trades, and an Owners list on every limited with a Trade button each.
-- **Mass send**: send the builder's offer to other owners of what you ask for, after one
-  confirmation listing them; at most 10, one every 30 seconds, skipping anyone you already
-  trade with, with Stop.
+- **Trade helpers** (Trades → Trade helpers): pick what you want, build an offer by hand or
+  with Suggest (closest value match), see everyone who owns it, open a trade with one of
+  them, or mass-send the offer (after one confirmation listing them; at most 10, one every
+  30 seconds, skipping anyone you already trade with, with Stop).
+- **Your own values**: set a value on any limited; it replaces Heximons' (or adds one)
+  everywhere values are used, and is labelled "Your value".
+- **Trade stats** over your last 40 completed trades, and an Owners list on every limited.
 - **Keyboard and display**: Ctrl+1–9 screens, Ctrl+F search, Ctrl+R refresh; text size and a
   compact layout in Settings.
 - **Releases**: pushing a `v*` tag builds the Windows exe on GitHub and attaches it to a

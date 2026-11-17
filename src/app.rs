@@ -162,7 +162,8 @@ pub enum Msg {
     OpenItem(u64, String),
     TradeStats(Res<TradeStats>),
     Owners(u64, Res<Vec<endpoints::AssetOwner>>),
-    MassCandidates(Res<MassPlan>),
+    /// Owners for the trade helpers: (the wanted assets, result).
+    HelperOwners(Vec<u64>, Res<Vec<Candidate>>),
     MassProgress { sent: usize, failed: usize, error: Option<String>, done: bool },
     Purchases(Res<HashMap<u64, Vec<u64>>>),
     ValueChanges(Res<Vec<crate::values::ValueChange>>),
@@ -720,6 +721,8 @@ pub struct CatalogState {
     pub resellers_more: bool,
     /// The watchlist target being typed in the details panel.
     pub watch_input: String,
+    /// Your own value being typed in the details panel.
+    pub override_input: String,
     /// Showing Deals instead of browsing.
     pub deals_mode: bool,
     /// Hide deals smaller than this many percent (0 means the default, 20).
@@ -807,6 +810,36 @@ pub struct TradesState {
     /// Showing the statistics instead of a list.
     pub show_stats: bool,
     pub stats: Load<TradeStats>,
+    /// Showing the trade helpers instead of a list.
+    pub show_helpers: bool,
+    pub helper: TradeHelper,
+}
+
+/// The Trade helpers tab: what you want, what you offer, and who owns it.
+#[derive(Default)]
+pub struct TradeHelper {
+    /// Wanted items: (asset id, name), at most four.
+    pub wanted: Vec<(u64, String)>,
+    pub search: String,
+    /// Your copies on offer (user asset ids), at most four.
+    pub give: Vec<u64>,
+    pub give_robux: String,
+    pub owners: Load<Vec<Candidate>>,
+    /// The wanted items the owners list was found for.
+    pub owners_for: Vec<u64>,
+}
+
+/// Someone who owns every wanted item.
+#[derive(Debug, Clone, Default)]
+pub struct Candidate {
+    pub user_id: u64,
+    pub name: String,
+    /// Their copy of each wanted item, in the same order.
+    pub copies: Vec<u64>,
+    /// When they got the first wanted item (ISO time).
+    pub updated: String,
+    /// You already have an open trade with them.
+    pub busy: bool,
 }
 
 /// One completed trade, judged at today's values.
@@ -969,6 +1002,8 @@ pub struct App {
     pub watch_prices: HashMap<u64, Option<u64>>,
     /// Heximons values (cached on disk, refreshed every 15 minutes).
     pub values: crate::values::Values,
+    /// Heximons' values as read (what is cached); `values` adds yours on top.
+    values_raw: crate::values::Values,
     values_loading: bool,
     pub values_error: Option<String>,
     /// Price history per asset, for the trade analyzer's small charts.
@@ -987,8 +1022,6 @@ pub struct App {
     hwnd: Arc<AtomicIsize>,
     /// A mass send under way (or just finished).
     pub mass: Option<MassStatus>,
-    /// Finding owners for a mass send.
-    pub mass_preparing: bool,
     /// Ctrl+F: the current screen's search box takes the keyboard.
     pub focus_search: bool,
     /// Text size last applied (so egui's own Ctrl +/- zoom is not undone).
@@ -1056,6 +1089,7 @@ impl App {
             watch_list: Default::default(),
             watch_prices: HashMap::new(),
             values: crate::values::load_cache().unwrap_or_default(),
+            values_raw: crate::values::load_cache().unwrap_or_default(),
             values_loading: false,
             values_error: None,
             history_cache: HashMap::new(),
@@ -1070,12 +1104,12 @@ impl App {
             quitting: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             hwnd: Arc::new(AtomicIsize::new(0)),
             mass: None,
-            mass_preparing: false,
             focus_search: false,
             applied_scale: 0.0,
             refreshed_at: Instant::now(),
             last_resize_check: Instant::now(),
         };
+        app.reapply_overrides();
         if let Ok(mut gate) = app.notify_gate.lock() {
             gate.enabled = app.cfg.chat_notifications;
             gate.activity_enabled = app.cfg.activity_notifications;
@@ -2017,87 +2051,94 @@ impl App {
         });
     }
 
-    /// Finds owners of the builder's requested items to send the same trade to:
-    /// everyone who owns all of them, minus you, the site's own account and
-    /// anyone you already have an open trade with; newest owners first, capped.
-    pub fn prepare_mass_send(&mut self) {
+    /// Trade helpers: finds everyone who owns all the wanted items (you, the
+    /// site's own account and hidden owners left out), newest owners first.
+    /// Owners you already have an open trade with are marked busy.
+    pub fn helper_find_owners(&mut self) {
         let Some(me) = self.me_id() else { return };
-        let Some(builder) = self.trade_builder.as_ref() else { return };
-        let (Load::Ready(mine), Load::Ready(theirs)) = (&builder.mine, &builder.theirs) else { return };
-        let mut assets: Vec<(u64, String)> = Vec::new();
-        for id in &builder.get {
-            if let Some(item) = theirs.items.iter().find(|item| item.user_asset_id == *id) {
-                if !assets.iter().any(|(asset, _)| *asset == item.id) {
-                    assets.push((item.id, item.name.clone()));
-                }
-            }
-        }
-        if assets.is_empty() || builder.give.is_empty() {
+        let assets: Vec<u64> = self.trades.helper.wanted.iter().map(|(asset, _)| *asset).collect();
+        if assets.is_empty() {
             return;
         }
-        let give_items: Vec<&models::Collectible> = builder
-            .give
-            .iter()
-            .filter_map(|id| mine.items.iter().find(|item| item.user_asset_id == *id))
-            .collect();
-        let give = TradeSide {
-            items: give_items.iter().map(|item| (item.name.clone(), item.rap, item.serial)).collect(),
-            rap: give_items.iter().map(|item| item.rap).sum(),
-            robux: None,
-            value: 0,
-        };
-        let give_ids = builder.give.clone();
-        let give_robux: u64 = builder.give_robux.parse().unwrap_or(0);
-        self.mass_preparing = true;
+        self.trades.helper.owners = Load::Busy;
+        self.trades.helper.owners_for = assets.clone();
         let cx = self.cx();
         let api = cx.api.clone();
-        cx.spawn(async move {
-            // Who you already have an open trade with.
-            let busy: std::collections::HashSet<u64> = endpoints::trades(&api, "outbound", None)
-                .await
-                .map(|page| page.items.iter().map(|trade| trade.partner_id).collect())
-                .unwrap_or_default();
-            // Owners per requested asset: user -> (name, copy, got it).
-            let mut lists: Vec<HashMap<u64, (String, u64, String)>> = Vec::new();
-            for (asset, _) in &assets {
-                let owners = match endpoints::asset_owners(&api, *asset, 5).await {
-                    Ok(owners) => owners,
-                    Err(error) => return Msg::MassCandidates(Err(error.to_string())),
-                };
-                let mut by_user = HashMap::new();
-                for owner in owners {
-                    by_user.entry(owner.user_id).or_insert((owner.name, owner.user_asset_id, owner.updated));
-                }
-                lists.push(by_user);
-            }
-            let Some(first) = lists.first() else { return Msg::MassCandidates(Err("no requested items".to_string())) };
-            let mut everyone: Vec<(u64, String, Vec<u64>, String)> = first
-                .iter()
-                .filter(|(user, _)| lists.iter().all(|list| list.contains_key(user)))
-                .map(|(user, (name, _, updated))| {
-                    let copies = lists.iter().map(|list| list[user].1).collect();
-                    (*user, name.clone(), copies, updated.clone())
-                })
-                .filter(|(user, ..)| *user != me && *user > 1)
-                .collect();
-            let before = everyone.len();
-            everyone.retain(|(user, ..)| !busy.contains(user));
-            // Owners who got the item most recently first (more likely active).
-            everyone.sort_by(|a, b| b.3.cmp(&a.3));
-            let skipped = before - everyone.len().min(MASS_CAP);
-            everyone.truncate(MASS_CAP);
-            if everyone.is_empty() {
-                return Msg::MassCandidates(Err("nobody else owns all of the requested items (or you already trade with them all)".to_string()));
-            }
-            Msg::MassCandidates(Ok(MassPlan {
-                give_ids,
-                give_robux,
-                give,
-                assets,
-                recipients: everyone.into_iter().map(|(user, name, copies, _)| (user, name, copies)).collect(),
-                skipped,
-            }))
-        });
+        cx.spawn(async move { Msg::HelperOwners(assets.clone(), find_candidates(&api, me, &assets).await) });
+    }
+
+    /// Your copies for the helper's offer, as the confirmation dialog shows them.
+    fn helper_give_side(&self) -> TradeSide {
+        let Some(bundle) = self.inventory.data.ready() else { return TradeSide::default() };
+        let copies: Vec<&models::Collectible> = self
+            .trades
+            .helper
+            .give
+            .iter()
+            .filter_map(|id| bundle.collectibles.iter().find(|item| item.user_asset_id == *id))
+            .collect();
+        TradeSide {
+            items: copies.iter().map(|item| (item.name.clone(), item.rap, item.serial)).collect(),
+            rap: copies.iter().map(|item| item.rap).sum(),
+            robux: None,
+            value: copies.iter().map(|item| self.values.value_or(item.id, item.rap)).sum(),
+        }
+    }
+
+    /// Opens the trade builder with one owner, your helper offer and their copies.
+    pub fn helper_open_trade(&mut self, owner: &Candidate) {
+        let give = self.trades.helper.give.clone();
+        let robux: u64 = self.trades.helper.give_robux.parse().unwrap_or(0);
+        self.open_trade_builder(owner.user_id, &owner.name, None, give, owner.copies.clone(), ((robux > 0).then_some(robux), None));
+    }
+
+    /// Mass send to the owners found (not busy), newest first, capped; asks first.
+    pub fn helper_mass_send(&mut self) {
+        let Load::Ready(owners) = &self.trades.helper.owners else { return };
+        if self.trades.helper.give.is_empty() {
+            return;
+        }
+        let free: Vec<&Candidate> = owners.iter().filter(|owner| !owner.busy).collect();
+        let skipped = owners.len() - free.len().min(MASS_CAP);
+        let recipients: Vec<(u64, String, Vec<u64>)> = free
+            .iter()
+            .take(MASS_CAP)
+            .map(|owner| (owner.user_id, owner.name.clone(), owner.copies.clone()))
+            .collect();
+        if recipients.is_empty() {
+            self.notice = Some((false, "Mass send: everyone who owns these already has an open trade with you.".to_string()));
+            return;
+        }
+        let plan = MassPlan {
+            give_ids: self.trades.helper.give.clone(),
+            give_robux: self.trades.helper.give_robux.parse().unwrap_or(0),
+            give: self.helper_give_side(),
+            assets: self.trades.helper.wanted.clone(),
+            recipients,
+            skipped,
+        };
+        self.ask(WriteAction::MassSend { plan });
+    }
+
+    /// Fills the helper's offer with your items closest in value to what you
+    /// want (Robux on both sides counted).
+    pub fn helper_suggest(&mut self) {
+        let Some(bundle) = self.inventory.data.ready() else { return };
+        let target: u64 = self
+            .trades
+            .helper
+            .wanted
+            .iter()
+            .map(|(asset, _)| self.values.get(*asset).map(|item| item.value.max(item.rap)).unwrap_or(0))
+            .sum();
+        let robux: u64 = self.trades.helper.give_robux.parse().unwrap_or(0);
+        let candidates: Vec<(u64, u64)> = bundle
+            .collectibles
+            .iter()
+            .filter(|item| !self.trades.helper.wanted.iter().any(|(asset, _)| *asset == item.id))
+            .map(|item| (item.user_asset_id, self.values.value_or(item.id, item.rap)))
+            .collect();
+        self.trades.helper.give = crate::ui::analyze::suggest(&candidates, target.saturating_sub(robux), TRADE_SIDE_LIMIT);
     }
 
     pub fn stop_mass_send(&mut self) {
@@ -2254,6 +2295,29 @@ impl App {
                 egui.request_repaint();
             }
         });
+    }
+
+    /// Puts your own values on top of Heximons' again.
+    pub fn reapply_overrides(&mut self) {
+        self.values = crate::values::with_overrides(
+            &self.values_raw,
+            self.cfg.value_overrides.iter().map(|item| (item.asset_id, item.name.as_str(), item.value)),
+        );
+        // Totals and deals depend on values.
+        self.catalog.deal_live.clear();
+        self.trades.stats = Load::Idle;
+    }
+
+    /// Set your own value for an item, or (`None`) go back to Heximons'.
+    pub fn set_override(&mut self, asset_id: u64, name: &str, value: Option<u64>) {
+        self.cfg.value_overrides.retain(|item| item.asset_id != asset_id);
+        if let Some(value) = value.filter(|value| *value > 0) {
+            self.cfg.value_overrides.push(crate::config::ValueOverride { asset_id, name: name.to_string(), value });
+            self.cfg.value_overrides.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        }
+        self.cfg.save();
+        self.reapply_overrides();
+        self.record_value_history();
     }
 
     /// Refreshes Heximons values when the cached ones are old.
@@ -3469,6 +3533,13 @@ impl App {
                 let limited = result.as_ref().ok().filter(|item| item.limited).map(|item| item.id);
                 // Start the watch box at the current target, else the cheapest price.
                 if let Ok(item) = &result {
+                    self.catalog.override_input = self
+                        .cfg
+                        .value_overrides
+                        .iter()
+                        .find(|own| own.asset_id == item.id)
+                        .map(|own| own.value.to_string())
+                        .unwrap_or_default();
                     self.catalog.watch_input = self
                         .watched(item.id)
                         .map(|watched| watched.target)
@@ -3747,11 +3818,9 @@ impl App {
                     self.catalog.owners = Some((asset, into_load(result)));
                 }
             }
-            Msg::MassCandidates(result) => {
-                self.mass_preparing = false;
-                match result {
-                    Ok(plan) => self.ask(WriteAction::MassSend { plan }),
-                    Err(error) => self.notice = Some((false, format!("Mass send: {error}"))),
+            Msg::HelperOwners(assets, result) => {
+                if self.trades.helper.owners_for == assets {
+                    self.trades.helper.owners = into_load(result);
                 }
             }
             Msg::MassProgress { sent, failed, error, done } => {
@@ -3787,7 +3856,8 @@ impl App {
                 match result {
                     Ok(values) => {
                         crate::values::save_cache(&values);
-                        self.values = values;
+                        self.values_raw = values;
+                        self.reapply_overrides();
                         // New best prices: check the deals again.
                         self.catalog.deal_live.clear();
                         self.values_error = None;
@@ -3887,6 +3957,39 @@ fn pick_assets(inventory: &Load<models::TradeInventory>, wanted: &[u64], picked:
             picked.push(copy.user_asset_id);
         }
     }
+}
+
+/// Everyone who owns all of `assets` (one copy of each), minus you, the site's
+/// own account and hidden owners; newest owners first; busy = an open trade
+/// with you already.
+async fn find_candidates(api: &ApiClient, me: u64, assets: &[u64]) -> Res<Vec<Candidate>> {
+    let busy: std::collections::HashSet<u64> = endpoints::trades(api, "outbound", None)
+        .await
+        .map(|page| page.items.iter().map(|trade| trade.partner_id).collect())
+        .unwrap_or_default();
+    let mut lists: Vec<HashMap<u64, (String, u64, String)>> = Vec::new();
+    for asset in assets {
+        let owners = endpoints::asset_owners(api, *asset, 5).await.map_err(|error| error.to_string())?;
+        let mut by_user = HashMap::new();
+        for owner in owners {
+            by_user.entry(owner.user_id).or_insert((owner.name, owner.user_asset_id, owner.updated));
+        }
+        lists.push(by_user);
+    }
+    let Some(first) = lists.first() else { return Ok(Vec::new()) };
+    let mut found: Vec<Candidate> = first
+        .iter()
+        .filter(|(user, _)| **user != me && **user > 1 && lists.iter().all(|list| list.contains_key(user)))
+        .map(|(user, (name, _, updated))| Candidate {
+            user_id: *user,
+            name: name.clone(),
+            copies: lists.iter().map(|list| list[user].1).collect(),
+            updated: updated.clone(),
+            busy: busy.contains(user),
+        })
+        .collect();
+    found.sort_by(|a, b| a.busy.cmp(&b.busy).then(b.updated.cmp(&a.updated)));
+    Ok(found)
 }
 
 fn into_load<T>(result: Res<T>) -> Load<T> {

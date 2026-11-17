@@ -15,7 +15,18 @@ pub fn value_line(ui: &mut Ui, values: &Values, asset_id: u64) {
     let Some(item) = values.get(asset_id) else { return };
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
-        if let Some(value) = item.staff_value {
+        if item.overridden {
+            ui.label(
+                RichText::new(format!("Your value {}", ui::money(item.value as i64)))
+                    .size(11.0)
+                    .font(ui::semibold(11.0))
+                    .color(accent()),
+            )
+            .on_hover_text("A value you set. Heximons' is used again if you clear it.");
+            if let Some(theirs) = item.heximons_value {
+                ui.label(RichText::new(format!("(Heximons {})", ui::money(theirs as i64))).size(10.5).color(MUTED));
+            }
+        } else if let Some(value) = item.staff_value {
             ui.label(
                 RichText::new(format!("Value {}", ui::money(value as i64)))
                     .size(11.0)
