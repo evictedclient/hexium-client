@@ -16,6 +16,9 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
                 .hint_text("Search games…")
                 .desired_width(300.0),
         );
+        if std::mem::take(&mut app.focus_search) {
+            response.request_focus();
+        }
         let submitted =
             response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
         if ui.button("Search").clicked() || submitted {

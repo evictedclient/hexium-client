@@ -431,3 +431,46 @@ pub fn player_history(ui: &mut Ui, points: &[crate::values::PlayerPoint], height
         );
     }
 }
+
+
+/// The value history with 1D / 1W / 1M / All buttons and the change over the
+/// chosen range.
+pub fn ranged_history(ui: &mut Ui, points: &[crate::values::PlayerPoint], height: f32, range: &mut u8) {
+    const RANGES: [(&str, &str, u64); 4] = [
+        ("1D", "the last day", 86_400),
+        ("1W", "the last week", 7 * 86_400),
+        ("1M", "the last month", 30 * 86_400),
+        ("All", "all time", u64::MAX),
+    ];
+    let Some(last) = points.last() else { return };
+    let (_, words, span) = RANGES[(*range as usize).min(3)];
+    let cutoff = last.time.saturating_sub(span);
+    let start = points.partition_point(|point| point.time < cutoff).min(points.len().saturating_sub(1));
+    let shown = &points[start..];
+    ui.horizontal(|ui| {
+        for (index, (label, _, _)) in RANGES.iter().enumerate() {
+            if ui.selectable_label(*range == index as u8, *label).clicked() {
+                *range = index as u8;
+            }
+        }
+        if let (Some(first), Some(last)) = (shown.first(), shown.last()) {
+            if shown.len() > 1 {
+                let change = last.value as i64 - first.value as i64;
+                let percent = if first.value > 0 { change as f64 / first.value as f64 * 100.0 } else { 0.0 };
+                let sign = if change > 0 { "+" } else { "" };
+                let color = match change.cmp(&0) {
+                    std::cmp::Ordering::Greater => ui::GREEN,
+                    std::cmp::Ordering::Less => ui::DANGER,
+                    std::cmp::Ordering::Equal => MUTED,
+                };
+                ui.add_space(8.0);
+                ui.label(
+                    RichText::new(format!("{sign}{} ({sign}{percent:.1}%) over {words}", ui::money(change)))
+                        .font(ui::semibold(13.0))
+                        .color(color),
+                );
+            }
+        }
+    });
+    player_history(ui, shown, height);
+}

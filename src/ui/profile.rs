@@ -291,7 +291,7 @@ fn heximons_card(app: &mut App, cx: &Ctx, ui: &mut Ui, user_id: u64) {
                     ui::stat(ui, "COLLECTIBLES", &ui::money(latest.collectibles as i64), accent());
                 });
             }
-            ui::chart::player_history(ui, &stats.points, 150.0);
+            ui::chart::ranged_history(ui, &stats.points, 150.0, &mut app.chart_range);
             ui.horizontal(|ui| {
                 muted(ui, "Gold is value, the accent line is RAP.");
                 if ui.link(RichText::new("View on Heximons").size(12.0)).clicked() {

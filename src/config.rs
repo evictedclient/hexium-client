@@ -34,12 +34,41 @@ pub struct Config {
     /// Limiteds to watch, each with the price to be told about.
     #[serde(default)]
     pub watchlist: Vec<WatchItem>,
+    /// Newest Heximons value change already seen (seconds); 0 = not started.
+    #[serde(default)]
+    pub last_change_seen: u64,
+    /// Deal notifications (off until switched on).
+    #[serde(default)]
+    pub deal_alerts: bool,
+    #[serde(default = "default_deal_alert_min")]
+    pub deal_alert_min: f32,
+    #[serde(default)]
+    pub deal_alert_staff_only: bool,
+    #[serde(default)]
+    pub deal_alert_high_demand: bool,
+    /// Deals already notified: (asset, price). Kept short.
+    #[serde(default)]
+    pub seen_deals: Vec<(u64, u64)>,
+    /// Text size (1.0 = normal).
+    #[serde(default = "default_scale")]
+    pub ui_scale: f32,
+    /// Tighter spacing.
+    #[serde(default)]
+    pub compact: bool,
     /// Closing the window hides it to the tray instead of quitting.
     #[serde(default = "default_true")]
     pub close_to_tray: bool,
     /// The exe the Start-menu shortcut was last written for.
     #[serde(default)]
     pub shortcut_exe: Option<String>,
+}
+
+fn default_deal_alert_min() -> f32 {
+    30.0
+}
+
+fn default_scale() -> f32 {
+    1.0
 }
 
 fn default_true() -> bool {
@@ -80,6 +109,14 @@ impl Default for Config {
             close_to_tray: true,
             activity_notifications: true,
             watchlist: Vec::new(),
+            last_change_seen: 0,
+            deal_alerts: false,
+            deal_alert_min: default_deal_alert_min(),
+            deal_alert_staff_only: false,
+            deal_alert_high_demand: false,
+            seen_deals: Vec::new(),
+            ui_scale: default_scale(),
+            compact: false,
             shortcut_exe: None,
         }
     }

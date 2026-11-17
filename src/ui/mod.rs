@@ -10,6 +10,7 @@ pub mod avatar;
 pub mod catalog;
 pub mod chart;
 pub mod chat;
+pub mod market;
 pub mod friends;
 pub mod games;
 pub mod groups;
@@ -843,6 +844,7 @@ pub fn chrome(app: &mut App, cx: &Ctx, ctx: &egui::Context) {
                         ui.vertical(|ui| {
                             ui.set_max_width((width - 56.0).max(320.0));
                             notice(app, ui);
+                            mass_strip(app, ui);
                             match app.view {
                                 View::Home => home::show(app, cx, ui),
                                 View::Games => games::show(app, cx, ui),
@@ -855,6 +857,7 @@ pub fn chrome(app: &mut App, cx: &Ctx, ctx: &egui::Context) {
                                 View::Money => money::show(app, cx, ui),
                                 View::Messages => messages::show(app, cx, ui),
                                 View::Chat => chat::show(app, cx, ui),
+                                View::Market => market::show(app, cx, ui),
                                 View::Trades => trades::show(app, cx, ui),
                                 View::Settings => settings::show(app, cx, ui),
                             }
@@ -924,6 +927,19 @@ pub fn dock(
                 .auto_shrink([false, false])
                 .show(ui, add);
         });
+}
+
+/// The side menu, in order. Ctrl+1 to Ctrl+9 follow it.
+pub const NAV_GROUPS: [(&str, &[View]); 5] = [
+    ("", &[View::Home]),
+    ("You", &[View::Profile, View::Avatar, View::Inventory, View::Money]),
+    ("Play", &[View::Games, View::Catalog, View::Market]),
+    ("Social", &[View::Friends, View::Chat, View::Messages, View::Trades, View::Groups]),
+    ("App", &[View::Settings]),
+];
+
+pub fn nav_views() -> Vec<View> {
+    NAV_GROUPS.iter().flat_map(|(_, views)| views.iter().copied()).collect()
 }
 
 /// Moves to a screen the same way the side menu does.
@@ -1045,13 +1061,7 @@ fn side_nav(app: &mut App, ctx: &egui::Context) {
             _ => 0,
         }
     };
-    const GROUPS: [(&str, &[View]); 5] = [
-        ("", &[View::Home]),
-        ("You", &[View::Profile, View::Avatar, View::Inventory, View::Money]),
-        ("Play", &[View::Games, View::Catalog]),
-        ("Social", &[View::Friends, View::Chat, View::Messages, View::Trades, View::Groups]),
-        ("App", &[View::Settings]),
-    ];
+    const GROUPS: [(&str, &[View]); 5] = NAV_GROUPS;
 
     egui::SidePanel::left("side_nav")
         .resizable(false)
@@ -1336,5 +1346,46 @@ pub fn follow_action(user_id: u64, name: &str, follow: bool) -> WriteAction {
         user_id,
         name: name.to_string(),
         follow,
+    }
+}
+
+/// Progress of a mass send, with Stop while it runs.
+fn mass_strip(app: &mut App, ui: &mut Ui) {
+    let Some(mass) = &app.mass else { return };
+    let (running, sent, failed, total, error) = (mass.running, mass.sent, mass.failed, mass.total, mass.last_error.clone());
+    let mut stop = false;
+    let mut dismiss = false;
+    card_frame().show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal(|ui| {
+            if running {
+                ui.add(egui::Spinner::new().size(14.0).color(accent()));
+            }
+            ui.label(
+                RichText::new(format!(
+                    "Mass send: {sent} of {total} sent{}{}",
+                    if failed > 0 { format!(" · {failed} failed") } else { String::new() },
+                    if running { " · one every 30 s" } else { " · finished" }
+                ))
+                .font(semibold(13.0)),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if running {
+                    stop = ui.button("Stop").clicked();
+                } else {
+                    dismiss = ui.small_button("Dismiss").clicked();
+                }
+            });
+        });
+        if let Some(error) = error {
+            ui.label(RichText::new(format!("Last error: {error}")).size(11.5).color(DANGER));
+        }
+    });
+    ui.add_space(8.0);
+    if stop {
+        app.stop_mass_send();
+    }
+    if dismiss {
+        app.mass = None;
     }
 }

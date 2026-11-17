@@ -55,11 +55,14 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
             egui::Layout::top_down(egui::Align::Min),
             |ui| {
                 ui.set_width(list_width);
-                ui.add(
+                let response = ui.add(
                     egui::TextEdit::singleline(&mut app.chat.filter)
                         .hint_text("Search people…")
                         .desired_width(list_width),
                 );
+                if std::mem::take(&mut app.focus_search) {
+                    response.request_focus();
+                }
                 ui.add_space(6.0);
                 let needle = app.chat.filter.trim().to_lowercase();
                 egui::ScrollArea::vertical()

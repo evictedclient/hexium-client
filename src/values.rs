@@ -437,3 +437,352 @@ mod more_tests {
         assert!(parse_player("<html></html>").is_err());
     }
 }
+
+// ---------------------------------------------------------------------------
+// Heximons pages beyond the catalog: value changes, market activity, trade ads
+// and the leaderboard. Each embeds its data as `var <name> = <json>;`.
+// ---------------------------------------------------------------------------
+
+/// The first complete JSON value after `var <name> =` (array or object). The
+/// JSON parser stops at its end, so text inside strings cannot confuse it.
+fn embedded_value(html: &str, name: &str) -> Option<Value> {
+    let at = html.find(&format!("var {name}"))?;
+    let rest = &html[at..];
+    let start = rest.find(|character| character == '[' || character == '{')?;
+    serde_json::Deserializer::from_str(&rest[start..]).into_iter::<Value>().next()?.ok()
+}
+
+async fn page(path: &str) -> Result<String, String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(25))
+        .user_agent(USER_AGENT)
+        .build()
+        .map_err(|error| error.to_string())?;
+    let response = client
+        .get(format!("https://heximons.lol{path}"))
+        .send()
+        .await
+        .map_err(|error| format!("could not reach heximons.lol: {error}"))?;
+    if !response.status().is_success() {
+        return Err(format!("heximons.lol answered HTTP {}", response.status().as_u16()));
+    }
+    response.text().await.map_err(|error| error.to_string())
+}
+
+fn text_of(value: &Value) -> Option<String> {
+    match value {
+        Value::String(text) => Some(text.clone()),
+        Value::Number(number) => Some(number.to_string()),
+        Value::Bool(flag) => Some(flag.to_string()),
+        _ => None,
+    }
+}
+
+/// One staff change: `[time, assetId, 1, kind, old, new]`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ValueChange {
+    pub time: u64,
+    pub asset_id: u64,
+    /// 0 acronym, 1 value, 2 demand, 3 trend, 4 projected, 5 hyped, 6 rare.
+    pub kind: u8,
+    pub old: Option<String>,
+    pub new: Option<String>,
+}
+
+impl ValueChange {
+    pub fn kind_label(&self) -> &'static str {
+        match self.kind {
+            0 => "Acronym",
+            1 => "Value",
+            2 => "Demand",
+            3 => "Trend",
+            4 => "Projected flag",
+            5 => "Hyped flag",
+            6 => "Rare flag",
+            _ => "Change",
+        }
+    }
+
+    /// The old or new side in words ("1,250 R$", "High", "Stable", "yes").
+    pub fn describe(&self, side: &Option<String>) -> String {
+        let Some(text) = side else { return "none".to_string() };
+        let number: Option<u64> = text.parse().ok();
+        match (self.kind, number) {
+            (1, Some(value)) => format!("{} R$", group(value)),
+            (2, Some(demand)) => ItemValue { demand: Some(demand as u8), ..Default::default() }
+                .demand_label()
+                .unwrap_or("?")
+                .to_string(),
+            (3, Some(trend)) => ItemValue { trend: Some(trend as u8), ..Default::default() }
+                .trend_label()
+                .unwrap_or("?")
+                .to_string(),
+            (4..=6, _) => {
+                if text == "true" {
+                    "yes".to_string()
+                } else {
+                    "no".to_string()
+                }
+            }
+            _ => text.clone(),
+        }
+    }
+}
+
+fn group(value: u64) -> String {
+    let digits = value.to_string();
+    let mut out = String::new();
+    for (index, character) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(character);
+    }
+    out
+}
+
+pub fn parse_value_changes(html: &str) -> Result<Vec<ValueChange>, String> {
+    let list = embedded_value(html, "value_changes").ok_or("no value changes on the page")?;
+    let mut changes: Vec<ValueChange> = list
+        .as_array()
+        .ok_or("value changes are not a list")?
+        .iter()
+        .filter_map(|entry| {
+            let fields = entry.as_array()?;
+            Some(ValueChange {
+                time: number(fields.first()?)?,
+                asset_id: number(fields.get(1)?)?,
+                kind: number(fields.get(3)?)? as u8,
+                old: fields.get(4).and_then(text_of),
+                new: fields.get(5).and_then(text_of),
+            })
+        })
+        .collect();
+    changes.sort_by(|a, b| b.time.cmp(&a.time));
+    Ok(changes)
+}
+
+pub async fn fetch_value_changes() -> Result<Vec<ValueChange>, String> {
+    parse_value_changes(&page("/valuechanges").await?)
+}
+
+/// One detected sale: RAP before and after. The sale price follows from the
+/// RAP rule (each sale moves RAP a tenth of the way to its price).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MarketSale {
+    pub time: u64,
+    pub asset_id: u64,
+    pub old_rap: u64,
+    pub new_rap: u64,
+}
+
+impl MarketSale {
+    pub fn price(&self) -> u64 {
+        let moved = self.new_rap as i64 - self.old_rap as i64;
+        (self.old_rap as i64 + moved * 10).max(0) as u64
+    }
+}
+
+pub fn parse_market(html: &str) -> Result<Vec<MarketSale>, String> {
+    let list = embedded_value(html, "initial_activity").ok_or("no market activity on the page")?;
+    let mut sales: Vec<MarketSale> = list
+        .as_array()
+        .ok_or("market activity is not a list")?
+        .iter()
+        .filter_map(|entry| {
+            let fields = entry.as_array()?;
+            Some(MarketSale {
+                time: number(fields.first()?)?,
+                asset_id: number(fields.get(1)?)?,
+                old_rap: number(fields.get(3)?)?,
+                new_rap: number(fields.get(4)?)?,
+            })
+        })
+        .collect();
+    sales.sort_by(|a, b| b.time.cmp(&a.time));
+    Ok(sales)
+}
+
+pub async fn fetch_market() -> Result<Vec<MarketSale>, String> {
+    parse_market(&page("/marketactivity").await?)
+}
+
+/// A trade ad: what someone offers and which items they want.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct TradeAd {
+    pub id: u64,
+    pub time: u64,
+    pub player_id: u64,
+    pub player_name: String,
+    pub offer: Vec<u64>,
+    pub offer_robux: u64,
+    /// Requested asset ids (ads asking only for "any"/"upgrade" have none).
+    pub request: Vec<u64>,
+}
+
+pub fn parse_trade_ads(html: &str) -> Result<Vec<TradeAd>, String> {
+    let list = embedded_value(html, "trade_ads").ok_or("no trade ads on the page")?;
+    let ids = |value: Option<&Value>| -> Vec<u64> {
+        value
+            .and_then(|side| side.get("items"))
+            .and_then(Value::as_array)
+            .map(|items| items.iter().filter_map(number).collect())
+            .unwrap_or_default()
+    };
+    let mut ads: Vec<TradeAd> = list
+        .as_array()
+        .ok_or("trade ads are not a list")?
+        .iter()
+        .filter_map(|entry| {
+            let fields = entry.as_array()?;
+            Some(TradeAd {
+                id: number(fields.first()?)?,
+                time: number(fields.get(1)?)?,
+                player_id: number(fields.get(2)?)?,
+                player_name: fields.get(3).and_then(Value::as_str).unwrap_or_default().to_string(),
+                offer: ids(fields.get(4)),
+                offer_robux: fields.get(4).and_then(|side| side.get("robux")).and_then(number).unwrap_or(0),
+                request: ids(fields.get(5)),
+            })
+        })
+        .collect();
+    ads.sort_by(|a, b| b.time.cmp(&a.time));
+    Ok(ads)
+}
+
+pub async fn fetch_trade_ads() -> Result<Vec<TradeAd>, String> {
+    parse_trade_ads(&page("/trades").await?)
+}
+
+/// One leaderboard row.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Ranked {
+    pub rank: u64,
+    pub player_id: u64,
+    pub name: String,
+    pub value: u64,
+    pub rap: u64,
+}
+
+/// The leaderboard has no data list: each row is a link to the player whose
+/// text reads "<name> Rank #N Value R$ X RAP R$ Y".
+pub fn parse_leaderboard(html: &str) -> Vec<Ranked> {
+    const LINK: &str = "href=\"/player/";
+    let mut rows = Vec::new();
+    let mut rest = html;
+    while let Some(at) = rest.find(LINK) {
+        rest = &rest[at + LINK.len()..];
+        let Some(id_end) = rest.find('"') else { break };
+        let Ok(player_id) = rest[..id_end].parse::<u64>() else { continue };
+        let Some(close) = rest.find("</a>") else { break };
+        // The visible part starts after the `>` that ends the link's own tag.
+        let Some(open_end) = rest[..close].find('>') else { continue };
+        let inner = &rest[open_end + 1..close];
+        // Strip tags down to the visible words.
+        let mut text = String::new();
+        let mut in_tag = false;
+        for character in inner.chars() {
+            match character {
+                '<' => in_tag = true,
+                '>' => {
+                    in_tag = false;
+                    text.push(' ');
+                }
+                _ if !in_tag => text.push(character),
+                _ => {}
+            }
+        }
+        let words: Vec<&str> = text.split_whitespace().collect();
+        let after = |label: &str| -> Option<u64> {
+            let at = words.iter().position(|word| *word == label)?;
+            words[at + 1..]
+                .iter()
+                .find_map(|word| word.trim_start_matches('#').replace(',', "").parse().ok())
+        };
+        if let (Some(rank), Some(value)) = (after("Rank"), after("Value")) {
+            let name_end = words.iter().position(|word| *word == "Rank").unwrap_or(0);
+            rows.push(Ranked {
+                rank,
+                player_id,
+                name: html_unescape(&words[..name_end].join(" ")),
+                value,
+                rap: after("RAP").unwrap_or(0),
+            });
+        }
+        rest = &rest[close..];
+    }
+    rows.sort_by_key(|row| row.rank);
+    rows.dedup_by_key(|row| row.rank);
+    rows
+}
+
+fn html_unescape(text: &str) -> String {
+    text.replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+}
+
+/// Both leaderboard pages (100 ranked players).
+pub async fn fetch_leaderboard() -> Result<Vec<Ranked>, String> {
+    let mut rows = parse_leaderboard(&page("/leaderboard").await?);
+    if let Ok(second) = page("/leaderboard/2").await {
+        rows.extend(parse_leaderboard(&second));
+        rows.sort_by_key(|row| row.rank);
+        rows.dedup_by_key(|row| row.rank);
+    }
+    if rows.is_empty() {
+        return Err("the leaderboard page had no players".to_string());
+    }
+    Ok(rows)
+}
+
+#[cfg(test)]
+mod page_tests {
+    use super::*;
+
+    #[test]
+    fn value_changes_and_words() {
+        let html = r#"<script>var value_changes = [[1794700000,907,1,1,"1250",null],[1794700100,907,1,2,"1","2"],[1794700200,5,1,0,null,"W];CJ"]];</script>"#;
+        let changes = parse_value_changes(html).unwrap();
+        assert_eq!(changes.len(), 3);
+        assert_eq!(changes[0].kind_label(), "Acronym");
+        assert_eq!(changes[0].new.as_deref(), Some("W];CJ"));
+        let demand = &changes[1];
+        assert_eq!((demand.describe(&demand.old), demand.describe(&demand.new)), ("Low".to_string(), "Normal".to_string()));
+        let value = &changes[2];
+        assert_eq!((value.describe(&value.old), value.describe(&value.new)), ("1,250 R$".to_string(), "none".to_string()));
+    }
+
+    #[test]
+    fn market_sale_price_from_rap() {
+        let html = "<script>var initial_activity = [[1794700000,5359,1,29,30,109591],[1794700100,66995,1,2064,2064,109592]];</script>";
+        let sales = parse_market(html).unwrap();
+        assert_eq!(sales[1].price(), 39);
+        assert_eq!(sales[0].price(), 2064);
+    }
+
+    #[test]
+    fn trade_ads_parse() {
+        let html = r#"<script>var trade_ads = [[51,1794700000,77,"Someone",{"items":[3086],"robux":50},{"items":[2219,33519],"tags":[1]},null]];</script>"#;
+        let ads = parse_trade_ads(html).unwrap();
+        assert_eq!(ads[0].offer, vec![3086]);
+        assert_eq!(ads[0].offer_robux, 50);
+        assert_eq!(ads[0].request, vec![2219, 33519]);
+        assert_eq!(ads[0].player_name, "Someone");
+    }
+
+    #[test]
+    fn leaderboard_rows() {
+        let html = r#"<a href="/player/12"><div><span>Big &amp; Rich</span></div><div>Rank</div><div>#1</div><div>Value</div><div>R$ 350,731</div><div>RAP</div><div>R$ 276,588</div></a>
+            <a href="/player/34"><span>Second</span> Rank #2 Value R$ 333,316 RAP R$ 259,008</a><a href="/player/99">nav link</a>"#;
+        let rows = parse_leaderboard(html);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            (rows[0].rank, rows[0].player_id, rows[0].name.as_str(), rows[0].value, rows[0].rap),
+            (1, 12, "Big & Rich", 350_731, 276_588)
+        );
+        assert_eq!(rows[1].name, "Second");
+    }
+}

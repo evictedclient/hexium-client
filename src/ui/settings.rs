@@ -101,6 +101,39 @@ pub fn show(app: &mut App, _cx: &Ctx, ui: &mut Ui) {
         });
     });
 
+    h2(ui, "Display");
+    ui::tile(ui, 620.0, |ui| {
+        ui.horizontal(|ui| {
+            ui.label("Text size");
+            let mut percent = (app.cfg.ui_scale * 100.0).round();
+            if ui.add(egui::Slider::new(&mut percent, 80.0..=150.0).suffix("%").step_by(5.0)).changed() {
+                app.cfg.ui_scale = percent / 100.0;
+                app.cfg.save();
+            }
+            if ui.small_button("Reset").clicked() {
+                app.cfg.ui_scale = 1.0;
+                app.cfg.save();
+            }
+        });
+        if ui.checkbox(&mut app.cfg.compact, "Compact layout (tighter spacing)").changed() {
+            app.cfg.save();
+        }
+        ui.add_space(6.0);
+        ui::eyebrow(ui, "Keyboard shortcuts");
+        for (keys, what) in [
+            ("Ctrl+1 … Ctrl+9", "the side menu screens, top to bottom"),
+            ("Ctrl+F", "the current screen's search box"),
+            ("Ctrl+R or F5", "refresh this screen"),
+            ("Esc", "close the side panel"),
+            ("Ctrl + / Ctrl -", "zoom in and out (until the next restart)"),
+        ] {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(keys).font(ui::semibold(12.0)));
+                muted(ui, what);
+            });
+        }
+    });
+
     h2(ui, "Chat");
     ui::tile(ui, 620.0, |ui| {
         if ui
@@ -136,7 +169,25 @@ pub fn show(app: &mut App, _cx: &Ctx, ui: &mut Ui) {
         {
             app.cfg.save();
         }
-        muted(ui, "Checked once a minute, since the site has no live push for these.");
+        muted(ui, "Checked once a minute, since the site has no live push for these. The same switch covers Heximons value changes to your items.");
+        ui.add_space(6.0);
+        let mut changed = ui.checkbox(&mut app.cfg.deal_alerts, "Deal notifications").changed();
+        ui.add_enabled_ui(app.cfg.deal_alerts, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("At least");
+                changed |= ui
+                    .add(egui::Slider::new(&mut app.cfg.deal_alert_min, 10.0..=80.0).suffix("% below value").step_by(5.0))
+                    .changed();
+            });
+            ui.horizontal(|ui| {
+                changed |= ui.checkbox(&mut app.cfg.deal_alert_staff_only, "Staff-valued only").changed();
+                changed |= ui.checkbox(&mut app.cfg.deal_alert_high_demand, "High demand only").changed();
+            });
+        });
+        if changed {
+            app.cfg.save();
+        }
+        muted(ui, "Checked whenever Heximons values refresh (every 15 minutes); each deal is announced once.");
         ui.add_space(6.0);
         let mut at_sign_in = app.autostart != crate::autostart::State::Off;
         if ui.checkbox(&mut at_sign_in, "Open at sign-in").changed() {

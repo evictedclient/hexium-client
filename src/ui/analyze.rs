@@ -160,3 +160,60 @@ pub fn weak_demand<'a>(values: &Values, assets: impl Iterator<Item = (u64, &'a s
         .map(|(_, name)| name.to_string())
         .collect()
 }
+
+/// The combination of up to `limit` items (copy id, value) whose total comes
+/// closest to `target`; ties go to fewer items. Looks at the 40 most valuable.
+pub fn suggest(items: &[(u64, u64)], target: u64, limit: usize) -> Vec<u64> {
+    let mut pool: Vec<(u64, u64)> = items.iter().copied().filter(|(_, value)| *value > 0).collect();
+    pool.sort_by(|a, b| b.1.cmp(&a.1));
+    pool.truncate(40);
+    let mut best: (u64, usize, Vec<u64>) = (u64::MAX, usize::MAX, Vec::new());
+    let n = pool.len();
+    let mut consider = |picked: &[usize]| {
+        let sum: u64 = picked.iter().map(|index| pool[*index].1).sum();
+        let distance = sum.abs_diff(target);
+        if (distance, picked.len()) < (best.0, best.1) {
+            best = (distance, picked.len(), picked.iter().map(|index| pool[*index].0).collect());
+        }
+    };
+    for a in 0..n {
+        consider(&[a]);
+        if limit < 2 { continue; }
+        for b in a + 1..n {
+            consider(&[a, b]);
+            if limit < 3 { continue; }
+            for c in b + 1..n {
+                consider(&[a, b, c]);
+                if limit < 4 { continue; }
+                for d in c + 1..n {
+                    consider(&[a, b, c, d]);
+                }
+            }
+        }
+    }
+    best.2
+}
+
+#[cfg(test)]
+mod suggest_tests {
+    use super::suggest;
+
+    #[test]
+    fn closest_combination() {
+        let items = [(1, 1000), (2, 600), (3, 450), (4, 300), (5, 50)];
+        // Only 450 + 300 make exactly 750.
+        let mut picked = suggest(&items, 750, 4);
+        picked.sort();
+        assert_eq!(picked, vec![3, 4]);
+        // Only 1000 + 600 + 50 make exactly 1650.
+        let mut picked = suggest(&items, 1650, 4);
+        picked.sort();
+        assert_eq!(picked, vec![1, 2, 5]);
+        // At most two items: 1000 + 600 is closest to 1650.
+        let mut picked = suggest(&items, 1650, 2);
+        picked.sort();
+        assert_eq!(picked, vec![1, 2]);
+        assert_eq!(suggest(&items, 1000, 4), vec![1]);
+        assert!(suggest(&[], 500, 4).is_empty());
+    }
+}

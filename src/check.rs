@@ -906,6 +906,62 @@ async fn run_all(client: &ApiClient) -> Vec<Row> {
         };
         rows.push(Row { name: "heximons.lol player history", detail, verdict, ms: started.elapsed().as_millis() });
     }
+    {
+        let started = Instant::now();
+        let (verdict, detail) = match crate::values::fetch_value_changes().await {
+            Ok(changes) => {
+                let values = changes.iter().filter(|change| change.kind == 1).count();
+                (Verdict::Pass, format!("{} changes · {values} of them values", changes.len()))
+            }
+            Err(error) => (Verdict::Warn, error),
+        };
+        rows.push(Row { name: "heximons.lol value changes", detail, verdict, ms: started.elapsed().as_millis() });
+    }
+    {
+        let started = Instant::now();
+        let (verdict, detail) = match crate::values::fetch_market().await {
+            Ok(sales) => (Verdict::Pass, format!("{} recent sales", sales.len())),
+            Err(error) => (Verdict::Warn, error),
+        };
+        rows.push(Row { name: "heximons.lol market activity", detail, verdict, ms: started.elapsed().as_millis() });
+    }
+    {
+        let started = Instant::now();
+        let (verdict, detail) = match crate::values::fetch_trade_ads().await {
+            Ok(ads) => {
+                let wanting = ads.iter().filter(|ad| !ad.request.is_empty()).count();
+                (Verdict::Pass, format!("{} ads · {wanting} ask for specific items", ads.len()))
+            }
+            Err(error) => (Verdict::Warn, error),
+        };
+        rows.push(Row { name: "heximons.lol trade ads", detail, verdict, ms: started.elapsed().as_millis() });
+    }
+    {
+        let started = Instant::now();
+        let (verdict, detail) = match crate::values::fetch_leaderboard().await {
+            Ok(rows) => (
+                if rows.len() >= 50 { Verdict::Pass } else { Verdict::Warn },
+                format!(
+                    "{} ranked · #1 worth {}",
+                    rows.len(),
+                    rows.first().map(|row| row.value).unwrap_or(0)
+                ),
+            ),
+            Err(error) => (Verdict::Warn, error),
+        };
+        rows.push(Row { name: "heximons.lol leaderboard", detail, verdict, ms: started.elapsed().as_millis() });
+    }
+    {
+        let started = Instant::now();
+        let (verdict, detail) = match endpoints::asset_owners(client, 907, 2).await {
+            Ok(owners) => (
+                if owners.is_empty() { Verdict::Warn } else { Verdict::Pass },
+                format!("{} copies listed for item 907 · {} with a serial", owners.len(), owners.iter().filter(|owner| owner.serial.is_some()).count()),
+            ),
+            Err(error) => (Verdict::Fail, error.to_string()),
+        };
+        rows.push(Row { name: "inventory/v2/assets/{id}/owners", detail, verdict, ms: started.elapsed().as_millis() });
+    }
     rows.push(match crate::play::launcher_registered() {
         Some(command) => Row {
             name: "hexium:// launcher",

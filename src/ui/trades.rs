@@ -16,16 +16,26 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
     let mut picked: Option<&str> = None;
     ui.horizontal(|ui| {
         for (tab, label) in TRADE_TABS {
-            if ui.selectable_label(current == tab, label).clicked() && current != tab {
+            let on = current == tab && !app.trades.show_stats;
+            if ui.selectable_label(on, label).clicked() && !on {
                 picked = Some(tab);
             }
         }
+        ui.add_space(10.0);
+        if ui.selectable_label(app.trades.show_stats, "Stats").clicked() {
+            app.trades.show_stats = !app.trades.show_stats;
+        }
     });
     if let Some(tab) = picked {
+        app.trades.show_stats = false;
         app.trades.tab = tab.to_string();
         app.reload_trades();
     }
     ui.add_space(4.0);
+    if app.trades.show_stats {
+        stats(app, ui);
+        return;
+    }
 
     let mut open_trade: Option<u64> = None;
     let mut open_profile: Option<u64> = None;
@@ -356,4 +366,77 @@ pub fn side_value(values: &crate::values::Values, offer: &TradeOffer) -> u64 {
         .iter()
         .map(|asset| values.value_or(asset.asset_id, asset.rap))
         .sum()
+}
+
+/// Your last completed trades, judged at today's Heximons values.
+fn stats(app: &mut App, ui: &mut Ui) {
+    app.load_trade_stats();
+    let mut open_profile_name: Option<String> = None;
+    match app.trades.stats.clone() {
+        Load::Ready(stats) => {
+            if stats.rows.is_empty() {
+                muted(ui, "No completed trades yet.");
+                return;
+            }
+            let total_value: i64 = stats.rows.iter().map(|row| row.gain_value).sum();
+            let total_rap: i64 = stats.rows.iter().map(|row| row.gain_rap).sum();
+            let signed = |amount: i64| format!("{}{}", if amount > 0 { "+" } else { "" }, ui::money(amount));
+            let color = |amount: i64| if amount > 0 { ui::GREEN } else if amount < 0 { ui::DANGER } else { MUTED };
+            ui::wrap(ui, |ui| {
+                ui::stat(ui, "TRADES", &stats.rows.len().to_string(), ui::accent());
+                ui::stat(ui, "BY VALUE", &signed(total_value), color(total_value));
+                ui::stat(ui, "BY RAP", &signed(total_rap), color(total_rap));
+                let won = stats.rows.iter().filter(|row| row.gain_value > 0).count();
+                ui::stat(ui, "WON", &format!("{won} of {}", stats.rows.len()), ui::accent());
+            });
+            muted(ui, "What you got minus what you gave, at today's values (RAP where Heximons has none), Robux included.");
+            let best = stats.rows.iter().max_by_key(|row| row.gain_value);
+            let worst = stats.rows.iter().min_by_key(|row| row.gain_value);
+            if let (Some(best), Some(worst)) = (best, worst) {
+                ui.label(RichText::new(format!("Best: with {} · {}", best.partner, signed(best.gain_value))).color(ui::GREEN));
+                ui.label(RichText::new(format!("Worst: with {} · {}", worst.partner, signed(worst.gain_value))).color(ui::DANGER));
+            }
+            ui.add_space(6.0);
+            ui::eyebrow(ui, "Who you trade with");
+            ui.horizontal_wrapped(|ui| {
+                for (name, count) in stats.partners.iter().take(10) {
+                    if ui.link(format!("{name} ×{count}")).clicked() {
+                        open_profile_name = Some(name.clone());
+                    }
+                }
+            });
+            ui.add_space(6.0);
+            ui::eyebrow(ui, "Each trade");
+            egui::Grid::new("trade-stats").striped(true).spacing(egui::vec2(16.0, 4.0)).show(ui, |ui| {
+                for heading in ["When", "With", "By value", "By RAP"] {
+                    ui.label(RichText::new(heading).size(11.5).color(MUTED));
+                }
+                ui.end_row();
+                for row in &stats.rows {
+                    ui.label(RichText::new(stamp(&row.created)).size(11.5).color(MUTED));
+                    ui.label(&row.partner);
+                    ui.label(RichText::new(signed(row.gain_value)).color(color(row.gain_value)));
+                    ui.label(RichText::new(signed(row.gain_rap)).size(11.5).color(color(row.gain_rap)));
+                    ui.end_row();
+                }
+            });
+            if ui.button("Recalculate").clicked() {
+                app.trades.stats = Load::Idle;
+            }
+        }
+        Load::Err(error) => failed(ui, &format!("Could not work out the stats: {error}")),
+        _ => waiting(ui, "your completed trades (this reads each one)"),
+    }
+    if let Some(name) = open_profile_name {
+        // Partners are listed by name; their id is in the trade list rows.
+        if let Some(id) = app
+            .trades
+            .data
+            .ready()
+            .and_then(|page| page.items.iter().find(|trade| trade.partner_name == name))
+            .map(|trade| trade.partner_id)
+        {
+            app.open_profile(id);
+        }
+    }
 }

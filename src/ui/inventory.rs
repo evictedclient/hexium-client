@@ -5,6 +5,7 @@ use crate::ui::{self, failed, h1, h2, muted, waiting, Ctx, accent, GOLD, GREEN, 
 
 pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
     app.load_inventory();
+    app.load_purchases();
 
     h1(ui, "Inventory");
     muted(ui, "Everything you own, collectibles first. Open a collectible to sell it.");
@@ -30,6 +31,31 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
                         .sum();
                     ui::stat(ui, "TOTAL VALUE", &ui::money(value as i64), GOLD);
                 }
+                // Profit and loss over the copies with a known purchase price.
+                if let Load::Ready(purchases) = &app.purchases {
+                    let paid = crate::app::paid_per_copy(&bundle.collectibles, purchases);
+                    let mut cost = 0u64;
+                    let mut worth = 0u64;
+                    for item in bundle.collectibles.iter().filter(|item| paid.contains_key(&item.user_asset_id)) {
+                        cost += paid[&item.user_asset_id];
+                        worth += app.values.value_or(item.id, item.rap);
+                    }
+                    if !paid.is_empty() {
+                        let gain = worth as i64 - cost as i64;
+                        ui::stat(
+                            ui,
+                            "PROFIT / LOSS",
+                            &format!("{}{}", if gain > 0 { "+" } else { "" }, ui::money(gain)),
+                            if gain >= 0 { ui::GREEN } else { ui::DANGER },
+                        );
+                        ui::stat(
+                            ui,
+                            "BOUGHT",
+                            &format!("{} of {}", paid.len(), bundle.collectibles.len()),
+                            accent(),
+                        );
+                    }
+                }
             });
 
             // Your history from Heximons (every few minutes since it started
@@ -49,7 +75,7 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
                         since.unwrap_or_default()
                     ),
                 );
-                ui::chart::player_history(ui, &stats.points, 170.0);
+                ui::chart::ranged_history(ui, &stats.points, 170.0, &mut app.chart_range);
             } else if !app.value_history.is_empty() {
                 h2(ui, "Value over time");
                 muted(
@@ -68,6 +94,11 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
                 muted(ui, "No collectibles yet.");
             } else {
                 let mut open: Option<(crate::api::models::Collectible, Option<String>)> = None;
+                // Purchases matched to copies once for the whole inventory.
+                let paid_map = match &app.purchases {
+                    Load::Ready(purchases) => Some(crate::app::paid_per_copy(&bundle.collectibles, purchases)),
+                    _ => None,
+                };
                 ui::wrap(ui, |ui| {
                     for item in &bundle.collectibles {
                         let icon = bundle.icons.get(&item.id).cloned();
@@ -100,6 +131,23 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
                                 }
                             });
                             ui::analyze::value_line(ui, &app.values, item.id);
+                            if let Some(paid_map) = &paid_map {
+                                if let Some(price) = paid_map.get(&item.user_asset_id).copied() {
+                                    let gain = app.values.value_or(item.id, item.rap) as i64 - price as i64;
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "Paid {} · {}{}",
+                                            ui::money(price as i64),
+                                            if gain > 0 { "+" } else { "" },
+                                            ui::money(gain)
+                                        ))
+                                        .size(11.0)
+                                        .color(if gain >= 0 { ui::GREEN } else { ui::DANGER }),
+                                    );
+                                } else {
+                                    ui.label(RichText::new("Traded in").size(10.5).color(MUTED));
+                                }
+                            }
                         });
                         if card.on_hover_text("Sell or reprice").clicked() && !selected {
                             open = Some((item.clone(), icon));

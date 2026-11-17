@@ -354,14 +354,6 @@ pub async fn friends_bundle(client: &ApiClient, id: u64) -> Result<FriendsBundle
     Ok(FriendsBundle { friends, icons })
 }
 
-pub async fn presence(client: &ApiClient, ids: &[u64]) -> Result<HashMap<u64, i64>> {
-    Ok(presence_details(client, ids)
-        .await?
-        .into_iter()
-        .map(|(id, presence)| (id, presence.kind))
-        .collect())
-}
-
 /// Presence with the game: `placeId` and `lastLocation` while in a game. (Its
 /// `gameId` is a number, not the server id the join script takes.)
 #[derive(Debug, Clone, Default)]
@@ -1621,4 +1613,64 @@ pub async fn cheapest_resale(client: &ApiClient, asset: u64) -> Result<Option<u6
         .map(|listing| num_at(listing, "price"))
         .filter(|price| *price > 0)
         .min())
+}
+
+// ---------------------------------------------------------------------------
+// Who owns copies of an item (`inventory/v2/assets/{id}/owners`)
+// ---------------------------------------------------------------------------
+
+/// One copy and its owner.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AssetOwner {
+    /// The copy (user asset id).
+    pub user_asset_id: u64,
+    pub user_id: u64,
+    pub name: String,
+    pub serial: Option<u64>,
+    /// When this owner got the copy (ISO time).
+    pub updated: String,
+}
+
+/// Every listed copy of an item, up to `max_pages` pages of 100. Copies whose
+/// owner is hidden or not a user are left out.
+pub async fn asset_owners(client: &ApiClient, asset: u64, max_pages: usize) -> Result<Vec<AssetOwner>> {
+    let path = api("inventory", &format!("/v2/assets/{asset}/owners"));
+    let mut owners = Vec::new();
+    let mut cursor = String::new();
+    for _ in 0..max_pages.max(1) {
+        let query = [
+            ("limit", "100".to_string()),
+            ("sortOrder", "Asc".to_string()),
+            ("cursor", cursor.clone()),
+        ];
+        let value = client.get_query(&path, &query).await?;
+        for entry in first_array(&value, &["data"]) {
+            let Some(owner) = entry.get("owner").filter(|owner| owner.is_object()) else { continue };
+            if !str_at(owner, "type").eq_ignore_ascii_case("user") && !str_at(owner, "type").is_empty() {
+                continue;
+            }
+            let user_id = num_at(owner, "id");
+            if user_id == 0 {
+                continue;
+            }
+            owners.push(AssetOwner {
+                user_asset_id: num_at(entry, "id"),
+                user_id,
+                name: str_at(owner, "name"),
+                serial: opt_num_at(entry, "serialNumber").filter(|serial| *serial > 0),
+                updated: str_at(entry, "updated"),
+            });
+        }
+        match value.get("nextPageCursor").and_then(Value::as_str) {
+            Some(next) if !next.is_empty() => cursor = next.to_string(),
+            _ => break,
+        }
+    }
+    Ok(owners)
+}
+
+/// A trade's offers without thumbnails (for statistics over many trades).
+pub async fn trade_offers(client: &ApiClient, id: u64) -> Result<TradeDetail> {
+    let value = client.get(&api("trades", &format!("/v1/trades/{id}"))).await?;
+    Ok(TradeDetail::from_value(&value))
 }

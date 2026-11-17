@@ -65,6 +65,23 @@ Not affiliated with hexium.wtf or Roblox.
   Heximons tracks, and a "View on Heximons" link on limiteds.
 - **Trade results**: a notification when a trade you sent is accepted, declined, countered
   or expires.
+- **Market** (from Heximons): staff value changes (notified when one hits your items),
+  detected sales, trade ads (filter to ads wanting your items; open one straight in the
+  trade builder) and the top-100 leaderboard.
+- **Deal notifications**: optional, with a minimum discount, staff-valued-only and
+  high-demand-only switches; each deal is announced once.
+- **Charts**: 1D / 1W / 1M / All ranges with the change over the range.
+- **Profit and loss**: what you paid for each collectible (from your purchases) against
+  its value now, and a total.
+- **Trade tools**: Suggest my side (closest value match), trade stats over your last 40
+  completed trades, and an Owners list on every limited with a Trade button each.
+- **Mass send**: send the builder's offer to other owners of what you ask for, after one
+  confirmation listing them; at most 10, one every 30 seconds, skipping anyone you already
+  trade with, with Stop.
+- **Keyboard and display**: Ctrl+1–9 screens, Ctrl+F search, Ctrl+R refresh; text size and a
+  compact layout in Settings.
+- **Releases**: pushing a `v*` tag builds the Windows exe on GitHub and attaches it to a
+  release.
 - **Make it yours**: pick an accent colour and background in Settings.
 
 Purchases are deliberately not supported: the site's buy flow includes an anti-bot

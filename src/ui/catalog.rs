@@ -32,6 +32,9 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
                 .hint_text("Search the catalog…")
                 .desired_width(320.0),
         );
+        if std::mem::take(&mut app.focus_search) {
+            response.request_focus();
+        }
         let submitted =
             response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
         if ui.button("Search").clicked() || submitted {
@@ -202,6 +205,8 @@ pub fn dock(app: &mut App, cx: &Ctx, ctx: &egui::Context) {
                         }
                         ui.add_space(8.0);
                         resellers(app, cx, ui, detail.id);
+                        ui.add_space(8.0);
+                        owners(app, ui, detail.id);
                     }
                 }
                 Load::Err(error) => {
@@ -520,5 +525,63 @@ fn deals(app: &mut App, cx: &Ctx, ui: &mut Ui) {
     if let Some((asset, name)) = open {
         app.open_item(asset, &name);
         app.catalog.deals_mode = true;
+    }
+}
+
+/// Everyone who owns a copy, with a Trade button each (loaded on request).
+fn owners(app: &mut App, ui: &mut Ui, asset: u64) {
+    ui.horizontal(|ui| {
+        ui::eyebrow(ui, "Owners");
+        let loaded = matches!(&app.catalog.owners, Some((shown, _)) if *shown == asset);
+        if ui.small_button(if loaded { "Refresh" } else { "Show owners" }).clicked() {
+            app.load_owners(asset);
+        }
+    });
+    let Some((shown, state)) = app.catalog.owners.clone() else { return };
+    if shown != asset {
+        return;
+    }
+    let me = app.session.ready().map(|session| session.user.id).unwrap_or(0);
+    match state {
+        Load::Ready(list) => {
+            muted(ui, &format!("{} copies", list.len()));
+            let mut trade: Option<crate::api::endpoints::AssetOwner> = None;
+            let mut profile: Option<u64> = None;
+            egui::ScrollArea::vertical()
+                .id_salt(("owners", asset))
+                .max_height(220.0)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    for owner in &list {
+                        ui.horizontal(|ui| {
+                            if ui.link(&owner.name).clicked() {
+                                profile = Some(owner.user_id);
+                            }
+                            if let Some(serial) = owner.serial {
+                                ui.label(RichText::new(format!("#{serial}")).size(11.5).color(GOLD));
+                            }
+                            let since: String = owner.updated.chars().take(10).collect();
+                            ui.label(RichText::new(format!("since {since}")).size(11.0).color(MUTED));
+                            if owner.user_id == me {
+                                ui::pill(ui, "YOU", accent());
+                            } else if owner.user_id > 1 {
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    if ui.small_button("Trade…").clicked() {
+                                        trade = Some(owner.clone());
+                                    }
+                                });
+                            }
+                        });
+                    }
+                });
+            if let Some(id) = profile {
+                app.open_profile(id);
+            }
+            if let Some(owner) = trade {
+                app.open_trade_builder(owner.user_id, &owner.name, None, Vec::new(), vec![owner.user_asset_id], (None, None));
+            }
+        }
+        Load::Err(error) => failed(ui, &format!("Could not load owners: {error}")),
+        _ => waiting(ui, "owners"),
     }
 }

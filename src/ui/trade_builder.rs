@@ -21,6 +21,7 @@ pub fn window(app: &mut App, cx: &Ctx, ctx: &egui::Context) {
 
     let mut open = true;
     let mut ask: Option<WriteAction> = None;
+    let mut mass = false;
     ui::dock(ctx, "builder", 760.0, egui::Id::new("trade-builder"), title, &mut open, |ui| {
             let Some(builder) = app.trade_builder.as_mut() else { return };
             muted(
@@ -183,6 +184,32 @@ pub fn window(app: &mut App, cx: &Ctx, ctx: &egui::Context) {
                     builder.give.clear();
                     builder.get.clear();
                 }
+                // Your side made to match what you ask for, by value.
+                if ui
+                    .add_enabled(!builder.get.is_empty(), egui::Button::new("Suggest my side"))
+                    .on_hover_text("Picks up to four of your items whose value comes closest to what you ask for (Robux included).")
+                    .clicked()
+                {
+                    if let Load::Ready(mine) = &builder.mine {
+                        let target = (get_side.value.max(get_side.rap) + get_robux).saturating_sub(give_robux);
+                        let candidates: Vec<(u64, u64)> = mine
+                            .items
+                            .iter()
+                            .map(|item| (item.user_asset_id, app.values.value_or(item.id, item.rap)))
+                            .collect();
+                        builder.give = ui::analyze::suggest(&candidates, target, TRADE_SIDE_LIMIT);
+                    }
+                }
+                if builder.counter_of.is_none() {
+                    let label = if app.mass_preparing { "Finding owners…" } else { "Send to other owners…" };
+                    if ui
+                        .add_enabled(ready && !app.mass_preparing && app.mass.as_ref().map_or(true, |mass| !mass.running), egui::Button::new(label))
+                        .on_hover_text("Finds everyone who owns what you ask for and sends them this same offer: up to 10 people, one every 30 seconds, after you confirm the list.")
+                        .clicked()
+                    {
+                        mass = true;
+                    }
+                }
                 if over_balance {
                     muted(ui, "Lower your Robux to send.");
                 } else if !ready {
@@ -195,6 +222,9 @@ pub fn window(app: &mut App, cx: &Ctx, ctx: &egui::Context) {
 
     if let Some(action) = ask {
         app.ask(action);
+    }
+    if mass {
+        app.prepare_mass_send();
     }
     if !open {
         app.trade_builder = None;

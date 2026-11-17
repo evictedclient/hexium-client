@@ -29,12 +29,13 @@ pub enum View {
     Money,
     Messages,
     Chat,
+    Market,
     Trades,
     Settings,
 }
 
 impl View {
-    pub const ALL: [View; 13] = [
+    pub const ALL: [View; 14] = [
         View::Home,
         View::Games,
         View::Catalog,
@@ -46,6 +47,7 @@ impl View {
         View::Money,
         View::Messages,
         View::Chat,
+        View::Market,
         View::Trades,
         View::Settings,
     ];
@@ -63,6 +65,7 @@ impl View {
             View::Money => "Money",
             View::Messages => "Messages",
             View::Chat => "Chat",
+            View::Market => "Market",
             View::Trades => "Trades",
             View::Settings => "Settings",
         }
@@ -157,6 +160,15 @@ pub enum Msg {
     WatchPrice(u64, Option<u64>),
     /// A watchlist alert was clicked: open that item.
     OpenItem(u64, String),
+    TradeStats(Res<TradeStats>),
+    Owners(u64, Res<Vec<endpoints::AssetOwner>>),
+    MassCandidates(Res<MassPlan>),
+    MassProgress { sent: usize, failed: usize, error: Option<String>, done: bool },
+    Purchases(Res<HashMap<u64, Vec<u64>>>),
+    ValueChanges(Res<Vec<crate::values::ValueChange>>),
+    MarketSales(Res<Vec<crate::values::MarketSale>>),
+    TradeAds(Res<Vec<crate::values::TradeAd>>),
+    Leaderboard(Res<Vec<crate::values::Ranked>>),
     /// A deal's live cheapest price from hexium.wtf.
     DealLive(u64, Res<Option<u64>>),
     /// A player's Heximons stats.
@@ -228,6 +240,8 @@ pub enum WriteAction {
         recipient: String,
         text: String,
     },
+    /// The same offer to several owners of the requested items, one at a time.
+    MassSend { plan: MassPlan },
 }
 
 impl WriteAction {
@@ -261,6 +275,7 @@ impl WriteAction {
             WriteAction::SendMessage { .. } => "Send message".to_string(),
             WriteAction::SendChat { conversation_id: None, .. } => "Start chat".to_string(),
             WriteAction::SendChat { .. } => "Send chat message".to_string(),
+            WriteAction::MassSend { plan } => format!("Send to {} owners", plan.recipients.len()),
         }
     }
 
@@ -343,6 +358,7 @@ impl WriteAction {
             WriteAction::AnswerTrade { partner, accept, give, get, .. } => {
                 trade_summary(partner, *accept, give, get)
             }
+            WriteAction::MassSend { plan } => mass_summary(plan),
             WriteAction::SendChat { conversation_id, recipient, text, .. } => {
                 chat_summary(recipient, conversation_id.is_none(), text)
             }
@@ -389,6 +405,7 @@ impl WriteAction {
             WriteAction::AnswerTrade { accept: false, .. } => "Decline trade",
             WriteAction::SendMessage { .. } => "Send",
             WriteAction::SendChat { .. } => "Send",
+            WriteAction::MassSend { .. } => "Start sending",
         }
     }
 }
@@ -574,6 +591,32 @@ fn chat_summary(recipient: &str, starts: bool, text: &str) -> String {
     format!("{start}\n\n{preview}{more}\n\nIt cannot be unsent.")
 }
 
+fn mass_summary(plan: &MassPlan) -> String {
+    let names: Vec<&str> = plan.assets.iter().map(|(_, name)| name.as_str()).collect();
+    let mut out = format!(
+        "Send the same trade to {} owners of {}, one every {MASS_GAP_SECS} seconds.\n\n",
+        plan.recipients.len(),
+        names.join(" + ")
+    );
+    out.push_str(&format!("You give each of them (RAP {})\n", group_digits(plan.give.rap)));
+    for (name, rap, serial) in &plan.give.items {
+        let serial = serial.map(|serial| format!("  #{serial}")).unwrap_or_default();
+        out.push_str(&format!("   · {name}  (RAP {}){serial}\n", group_digits(*rap)));
+    }
+    if plan.give_robux > 0 {
+        out.push_str(&format!("   · plus {} R$\n", group_digits(plan.give_robux)));
+    }
+    out.push_str("\nTo:\n");
+    for (_, name, copies) in &plan.recipients {
+        out.push_str(&format!("   · {name} ({} item(s))\n", copies.len()));
+    }
+    if plan.skipped > 0 {
+        out.push_str(&format!("\n{} other owner(s) left out (already trading with you, or past the cap of {MASS_CAP}).\n", plan.skipped));
+    }
+    out.push_str("\nIf more than one accepts, only the first gets your items; the others fail. You can stop at any time.");
+    out
+}
+
 fn group_digits(value: u64) -> String {
     crate::ui::money(value as i64)
 }
@@ -598,6 +641,9 @@ pub struct TradeBuilder {
     /// Robux typed for each side (digits only; empty means none).
     pub give_robux: String,
     pub get_robux: String,
+    /// Items to pick once each inventory loads (asset ids), e.g. from a trade ad.
+    pub want_give: Vec<u64>,
+    pub want_get: Vec<u64>,
 }
 
 /// The message being written. It only becomes a write once the user presses
@@ -669,6 +715,8 @@ pub struct CatalogState {
     pub resellers: Load<models::ResellersPage>,
     /// Its RAP and sales history.
     pub resale: Load<models::ResaleData>,
+    /// Owners of the limited in the details panel: (asset, list).
+    pub owners: Option<(u64, Load<Vec<endpoints::AssetOwner>>)>,
     pub resellers_more: bool,
     /// The watchlist target being typed in the details panel.
     pub watch_input: String,
@@ -756,6 +804,72 @@ pub struct TradesState {
     /// Trade whose details window is open.
     pub selected: Option<u64>,
     pub detail: Load<models::TradeDetail>,
+    /// Showing the statistics instead of a list.
+    pub show_stats: bool,
+    pub stats: Load<TradeStats>,
+}
+
+/// One completed trade, judged at today's values.
+#[derive(Debug, Clone, Default)]
+pub struct StatRow {
+    pub id: u64,
+    pub partner: String,
+    pub created: String,
+    /// What you got minus what you gave (Robux included).
+    pub gain_value: i64,
+    pub gain_rap: i64,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct TradeStats {
+    pub rows: Vec<StatRow>,
+    /// Partner and how many trades, most first.
+    pub partners: Vec<(String, usize)>,
+}
+
+/// A trade to send to several owners, ready for the confirmation dialog.
+#[derive(Debug, Clone, Default)]
+pub struct MassPlan {
+    pub give_ids: Vec<u64>,
+    pub give_robux: u64,
+    pub give: TradeSide,
+    /// The requested items: (asset id, name).
+    pub assets: Vec<(u64, String)>,
+    /// (user id, name, their copies of the requested items).
+    pub recipients: Vec<(u64, String, Vec<u64>)>,
+    /// Owners left out (already in a trade with you, or past the cap).
+    pub skipped: usize,
+}
+
+/// Progress of a mass send under way.
+pub struct MassStatus {
+    pub total: usize,
+    pub sent: usize,
+    pub failed: usize,
+    pub last_error: Option<String>,
+    pub running: bool,
+    pub stop: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// Most owners a mass send goes to, and the pause between trades.
+pub const MASS_CAP: usize = 10;
+pub const MASS_GAP_SECS: u64 = 30;
+
+/// The Market screen: Heximons' value changes, sales, trade ads and leaderboard.
+#[derive(Default)]
+pub struct MarketState {
+    /// 0 value changes, 1 activity, 2 trade ads, 3 leaderboard.
+    pub tab: u8,
+    pub changes: Load<Vec<crate::values::ValueChange>>,
+    pub sales: Load<Vec<crate::values::MarketSale>>,
+    pub ads: Load<Vec<crate::values::TradeAd>>,
+    pub leaderboard: Load<Vec<crate::values::Ranked>>,
+    /// Only items you own or watch.
+    pub mine_only: bool,
+    /// Trade ads that ask for items you own.
+    pub ads_for_me: bool,
+    /// When value changes were last read (also drives their notifications).
+    pub changes_read_at: Option<Instant>,
 }
 
 /// Who the open chat is with: an existing conversation, or a friend you have
@@ -845,6 +959,7 @@ pub struct App {
     pub messages: MessagesState,
     pub trades: TradesState,
     pub chat: ChatState,
+    pub market: MarketState,
     hub: Option<HubHandle>,
     watch: Option<crate::watch::WatchHandle>,
     price_watch: Option<crate::watch::WatchHandle>,
@@ -863,9 +978,21 @@ pub struct App {
     /// Heximons player stats (value history, rank) by user id; `None` inside
     /// when Heximons does not track that player.
     pub player_stats: HashMap<u64, Load<Option<crate::values::PlayerStats>>>,
+    /// Range of the value history charts: 0 day, 1 week, 2 month, 3 all.
+    pub chart_range: u8,
+    /// Robux paid for each asset, newest purchase first (from Money's purchases).
+    pub purchases: Load<HashMap<u64, Vec<u64>>>,
     notify_gate: crate::notify::SharedGate,
     /// The native window handle, for raising the window from a toast click.
     hwnd: Arc<AtomicIsize>,
+    /// A mass send under way (or just finished).
+    pub mass: Option<MassStatus>,
+    /// Finding owners for a mass send.
+    pub mass_preparing: bool,
+    /// Ctrl+F: the current screen's search box takes the keyboard.
+    pub focus_search: bool,
+    /// Text size last applied (so egui's own Ctrl +/- zoom is not undone).
+    applied_scale: f32,
     /// Started at sign-in with `--minimized`: minimise on the first frame.
     start_minimized: bool,
     /// The "Open at sign-in" entry, as Windows has it.
@@ -922,6 +1049,7 @@ impl App {
             messages: MessagesState::default(),
             trades: TradesState::default(),
             chat: ChatState::default(),
+            market: MarketState::default(),
             hub: None,
             watch: None,
             price_watch: None,
@@ -933,12 +1061,18 @@ impl App {
             history_cache: HashMap::new(),
             value_history: crate::values::load_history(),
             player_stats: HashMap::new(),
+            chart_range: 1,
+            purchases: Load::Idle,
             notify_gate: Default::default(),
             start_minimized,
             autostart: crate::autostart::state(),
             tray: None,
             quitting: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             hwnd: Arc::new(AtomicIsize::new(0)),
+            mass: None,
+            mass_preparing: false,
+            focus_search: false,
+            applied_scale: 0.0,
             refreshed_at: Instant::now(),
             last_resize_check: Instant::now(),
         };
@@ -1262,6 +1396,37 @@ impl App {
                     .await
                     .map_err(|error| error.to_string()),
             )
+        });
+    }
+
+    /// Your Robux purchases by asset, for profit and loss (up to 10 pages).
+    pub fn load_purchases(&mut self) {
+        if !self.purchases.is_idle() {
+            return;
+        }
+        let Some(me) = self.me_id() else { return };
+        self.purchases = Load::Busy;
+        let cx = self.cx();
+        let api = cx.api.clone();
+        cx.spawn(async move {
+            let mut paid: HashMap<u64, Vec<u64>> = HashMap::new();
+            let mut cursor: Option<String> = None;
+            for _ in 0..10 {
+                let page = match endpoints::transactions(&api, me, "purchase", cursor.as_deref()).await {
+                    Ok(page) => page,
+                    Err(error) => return Msg::Purchases(Err(error.to_string())),
+                };
+                for row in &page.items {
+                    if row.item_id != 0 && row.currency.eq_ignore_ascii_case("robux") && row.amount != 0 {
+                        paid.entry(row.item_id).or_default().push(row.amount.unsigned_abs());
+                    }
+                }
+                match page.next {
+                    Some(next) => cursor = Some(next),
+                    None => break,
+                }
+            }
+            Msg::Purchases(Ok(paid))
         });
     }
 
@@ -1769,6 +1934,328 @@ impl App {
         });
     }
 
+    /// Opens the trade builder from a trade ad: your copies of what they want on
+    /// your side, what they offer on theirs (picked as each inventory loads).
+    pub fn trade_from_ad(&mut self, ad: &crate::values::TradeAd) {
+        self.open_trade_builder(ad.player_id, &ad.player_name, None, Vec::new(), Vec::new(), (None, None));
+        if let Some(builder) = self.trade_builder.as_mut() {
+            builder.want_give = ad.request.clone();
+            builder.want_get = ad.offer.clone();
+            if ad.offer_robux > 0 {
+                builder.get_robux = ad.offer_robux.to_string();
+            }
+        }
+    }
+
+    /// Statistics over your last 40 completed trades, at today's values.
+    pub fn load_trade_stats(&mut self) {
+        if !self.trades.stats.is_idle() {
+            return;
+        }
+        let Some(me) = self.me_id() else { return };
+        self.trades.stats = Load::Busy;
+        let values = self.values.clone();
+        let cx = self.cx();
+        let api = cx.api.clone();
+        cx.spawn(async move {
+            let mut ids: Vec<(u64, String, String)> = Vec::new();
+            let mut cursor: Option<String> = None;
+            for _ in 0..3 {
+                let page = match endpoints::trades(&api, "completed", cursor.as_deref()).await {
+                    Ok(page) => page,
+                    Err(error) => return Msg::TradeStats(Err(error.to_string())),
+                };
+                ids.extend(page.items.iter().map(|trade| (trade.id, trade.partner_name.clone(), trade.created.clone())));
+                match page.next {
+                    Some(next) if ids.len() < 40 => cursor = Some(next),
+                    _ => break,
+                }
+            }
+            ids.truncate(40);
+            let mut stats = TradeStats::default();
+            let mut partners: HashMap<String, usize> = HashMap::new();
+            for (id, partner, created) in ids {
+                let Ok(detail) = endpoints::trade_offers(&api, id).await else { continue };
+                let worth = |offer: &models::TradeOffer| -> (i64, i64) {
+                    let robux = offer.robux.unwrap_or(0) as i64;
+                    let value: u64 = offer.assets.iter().map(|asset| values.value_or(asset.asset_id, asset.rap)).sum();
+                    (value as i64 + robux, offer.total_rap() as i64 + robux)
+                };
+                let mine = detail.offers.iter().find(|offer| offer.user_id == me);
+                let theirs = detail.offers.iter().find(|offer| offer.user_id != me);
+                if let (Some(mine), Some(theirs)) = (mine, theirs) {
+                    let (give_value, give_rap) = worth(mine);
+                    let (get_value, get_rap) = worth(theirs);
+                    *partners.entry(partner.clone()).or_default() += 1;
+                    stats.rows.push(StatRow {
+                        id,
+                        partner,
+                        created,
+                        gain_value: get_value - give_value,
+                        gain_rap: get_rap - give_rap,
+                    });
+                }
+                tokio::time::sleep(Duration::from_millis(150)).await;
+            }
+            let mut partners: Vec<(String, usize)> = partners.into_iter().collect();
+            partners.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+            stats.partners = partners;
+            Msg::TradeStats(Ok(stats))
+        });
+    }
+
+    /// Everyone who owns a copy of a limited (up to 500 copies).
+    pub fn load_owners(&mut self, asset: u64) {
+        if matches!(&self.catalog.owners, Some((shown, Load::Busy)) if *shown == asset) {
+            return;
+        }
+        self.catalog.owners = Some((asset, Load::Busy));
+        let cx = self.cx();
+        let api = cx.api.clone();
+        cx.spawn(async move {
+            Msg::Owners(asset, endpoints::asset_owners(&api, asset, 5).await.map_err(|error| error.to_string()))
+        });
+    }
+
+    /// Finds owners of the builder's requested items to send the same trade to:
+    /// everyone who owns all of them, minus you, the site's own account and
+    /// anyone you already have an open trade with; newest owners first, capped.
+    pub fn prepare_mass_send(&mut self) {
+        let Some(me) = self.me_id() else { return };
+        let Some(builder) = self.trade_builder.as_ref() else { return };
+        let (Load::Ready(mine), Load::Ready(theirs)) = (&builder.mine, &builder.theirs) else { return };
+        let mut assets: Vec<(u64, String)> = Vec::new();
+        for id in &builder.get {
+            if let Some(item) = theirs.items.iter().find(|item| item.user_asset_id == *id) {
+                if !assets.iter().any(|(asset, _)| *asset == item.id) {
+                    assets.push((item.id, item.name.clone()));
+                }
+            }
+        }
+        if assets.is_empty() || builder.give.is_empty() {
+            return;
+        }
+        let give_items: Vec<&models::Collectible> = builder
+            .give
+            .iter()
+            .filter_map(|id| mine.items.iter().find(|item| item.user_asset_id == *id))
+            .collect();
+        let give = TradeSide {
+            items: give_items.iter().map(|item| (item.name.clone(), item.rap, item.serial)).collect(),
+            rap: give_items.iter().map(|item| item.rap).sum(),
+            robux: None,
+            value: 0,
+        };
+        let give_ids = builder.give.clone();
+        let give_robux: u64 = builder.give_robux.parse().unwrap_or(0);
+        self.mass_preparing = true;
+        let cx = self.cx();
+        let api = cx.api.clone();
+        cx.spawn(async move {
+            // Who you already have an open trade with.
+            let busy: std::collections::HashSet<u64> = endpoints::trades(&api, "outbound", None)
+                .await
+                .map(|page| page.items.iter().map(|trade| trade.partner_id).collect())
+                .unwrap_or_default();
+            // Owners per requested asset: user -> (name, copy, got it).
+            let mut lists: Vec<HashMap<u64, (String, u64, String)>> = Vec::new();
+            for (asset, _) in &assets {
+                let owners = match endpoints::asset_owners(&api, *asset, 5).await {
+                    Ok(owners) => owners,
+                    Err(error) => return Msg::MassCandidates(Err(error.to_string())),
+                };
+                let mut by_user = HashMap::new();
+                for owner in owners {
+                    by_user.entry(owner.user_id).or_insert((owner.name, owner.user_asset_id, owner.updated));
+                }
+                lists.push(by_user);
+            }
+            let Some(first) = lists.first() else { return Msg::MassCandidates(Err("no requested items".to_string())) };
+            let mut everyone: Vec<(u64, String, Vec<u64>, String)> = first
+                .iter()
+                .filter(|(user, _)| lists.iter().all(|list| list.contains_key(user)))
+                .map(|(user, (name, _, updated))| {
+                    let copies = lists.iter().map(|list| list[user].1).collect();
+                    (*user, name.clone(), copies, updated.clone())
+                })
+                .filter(|(user, ..)| *user != me && *user > 1)
+                .collect();
+            let before = everyone.len();
+            everyone.retain(|(user, ..)| !busy.contains(user));
+            // Owners who got the item most recently first (more likely active).
+            everyone.sort_by(|a, b| b.3.cmp(&a.3));
+            let skipped = before - everyone.len().min(MASS_CAP);
+            everyone.truncate(MASS_CAP);
+            if everyone.is_empty() {
+                return Msg::MassCandidates(Err("nobody else owns all of the requested items (or you already trade with them all)".to_string()));
+            }
+            Msg::MassCandidates(Ok(MassPlan {
+                give_ids,
+                give_robux,
+                give,
+                assets,
+                recipients: everyone.into_iter().map(|(user, name, copies, _)| (user, name, copies)).collect(),
+                skipped,
+            }))
+        });
+    }
+
+    pub fn stop_mass_send(&mut self) {
+        if let Some(mass) = &self.mass {
+            mass.stop.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// Loads the Market tab on show (each list once, until refreshed).
+    pub fn load_market(&mut self) {
+        // Ownership drives the "mine" filters and the ads for you.
+        self.load_inventory();
+        match self.market.tab {
+            0 => self.load_changes(false),
+            1 => {
+                if self.market.sales.is_idle() {
+                    self.market.sales = Load::Busy;
+                    let cx = self.cx();
+                    cx.spawn(async move { Msg::MarketSales(crate::values::fetch_market().await) });
+                }
+            }
+            2 => {
+                if self.market.ads.is_idle() {
+                    self.market.ads = Load::Busy;
+                    let cx = self.cx();
+                    cx.spawn(async move { Msg::TradeAds(crate::values::fetch_trade_ads().await) });
+                }
+            }
+            _ => {
+                if self.market.leaderboard.is_idle() {
+                    self.market.leaderboard = Load::Busy;
+                    let cx = self.cx();
+                    cx.spawn(async move { Msg::Leaderboard(crate::values::fetch_leaderboard().await) });
+                }
+            }
+        }
+    }
+
+    /// Value changes: on the Market screen, and every 15 minutes in the
+    /// background for the notifications.
+    pub fn load_changes(&mut self, force: bool) {
+        if matches!(self.market.changes, Load::Busy) {
+            return;
+        }
+        if !force && !self.market.changes.is_idle() {
+            return;
+        }
+        if self.market.changes.ready().is_none() {
+            self.market.changes = Load::Busy;
+        }
+        self.market.changes_read_at = Some(Instant::now());
+        let cx = self.cx();
+        cx.spawn(async move { Msg::ValueChanges(crate::values::fetch_value_changes().await) });
+    }
+
+    /// Asset ids you own (collectibles) or watch.
+    pub fn my_assets(&self) -> std::collections::HashSet<u64> {
+        let mut assets: std::collections::HashSet<u64> = self
+            .inventory
+            .data
+            .ready()
+            .map(|bundle| bundle.collectibles.iter().map(|item| item.id).collect())
+            .unwrap_or_default();
+        assets.extend(self.cfg.watchlist.iter().map(|item| item.asset_id));
+        assets
+    }
+
+    /// Notifies about new value / demand / trend changes to your items.
+    fn notify_changes(&mut self, changes: &[crate::values::ValueChange]) {
+        let newest = changes.iter().map(|change| change.time).max().unwrap_or(0);
+        if self.cfg.last_change_seen == 0 {
+            // First read: remember where we are, tell nothing.
+            self.cfg.last_change_seen = newest;
+            self.cfg.save();
+            return;
+        }
+        let mine = self.my_assets();
+        let fresh: Vec<&crate::values::ValueChange> = changes
+            .iter()
+            .filter(|change| change.time > self.cfg.last_change_seen)
+            .filter(|change| (1..=3).contains(&change.kind) && mine.contains(&change.asset_id))
+            .collect();
+        if newest > self.cfg.last_change_seen {
+            self.cfg.last_change_seen = newest;
+            self.cfg.save();
+        }
+        if fresh.is_empty() || !self.cfg.activity_notifications {
+            return;
+        }
+        let name = |asset: u64| self.values.get(asset).map(|item| item.name.clone()).unwrap_or_else(|| format!("Item {asset}"));
+        let (title, body) = if fresh.len() == 1 {
+            let change = fresh[0];
+            (
+                format!("{} changed: {}", change.kind_label(), name(change.asset_id)),
+                format!("{} → {}", change.describe(&change.old), change.describe(&change.new)),
+            )
+        } else {
+            let names: Vec<String> = fresh.iter().take(3).map(|change| name(change.asset_id)).collect();
+            (format!("{} value changes on your items", fresh.len()), names.join(", "))
+        };
+        let (hwnd, tx, egui) = (self.hwnd.clone(), self.tx.clone(), self.egui.clone());
+        crate::notify::show(title, body, move || {
+            crate::notify::bring_to_front(hwnd.load(Ordering::Relaxed));
+            if tx.send(Msg::OpenView(View::Market)).is_ok() {
+                egui.request_repaint();
+            }
+        });
+    }
+
+    /// Notifies about new deals that match the alert settings.
+    fn notify_deals(&mut self) {
+        if !self.cfg.deal_alerts || self.values.items.is_empty() {
+            return;
+        }
+        let found: Vec<crate::values::Deal> = crate::values::deals(&self.values, self.cfg.deal_alert_min, self.cfg.deal_alert_staff_only)
+            .into_iter()
+            .filter(|deal| {
+                !self.cfg.deal_alert_high_demand
+                    || self.values.get(deal.asset_id).and_then(|item| item.demand) == Some(3)
+            })
+            .collect();
+        let primed = !self.cfg.seen_deals.is_empty();
+        let fresh: Vec<crate::values::Deal> = found
+            .iter()
+            .filter(|deal| !self.cfg.seen_deals.contains(&(deal.asset_id, deal.price)))
+            .cloned()
+            .collect();
+        for deal in &found {
+            if !self.cfg.seen_deals.contains(&(deal.asset_id, deal.price)) {
+                self.cfg.seen_deals.push((deal.asset_id, deal.price));
+            }
+        }
+        // Keep the memory small.
+        let excess = self.cfg.seen_deals.len().saturating_sub(300);
+        self.cfg.seen_deals.drain(..excess);
+        self.cfg.save();
+        if !primed || fresh.is_empty() {
+            return;
+        }
+        let first = fresh[0].clone();
+        let (title, body) = if fresh.len() == 1 {
+            (
+                format!("Deal: {} at -{:.0}%", first.name, first.discount),
+                format!("{} R$, value {} R$", crate::ui::money(first.price as i64), crate::ui::money(first.value as i64)),
+            )
+        } else {
+            let names: Vec<String> = fresh.iter().take(3).map(|deal| format!("{} -{:.0}%", deal.name, deal.discount)).collect();
+            (format!("{} new deals", fresh.len()), names.join(", "))
+        };
+        let (hwnd, tx, egui) = (self.hwnd.clone(), self.tx.clone(), self.egui.clone());
+        crate::notify::show(title, body, move || {
+            crate::notify::bring_to_front(hwnd.load(Ordering::Relaxed));
+            if tx.send(Msg::OpenItem(first.asset_id, first.name.clone())).is_ok() {
+                egui.request_repaint();
+            }
+        });
+    }
+
     /// Refreshes Heximons values when the cached ones are old.
     fn refresh_values(&mut self) {
         if self.values_loading || !self.values.is_stale() {
@@ -2194,6 +2681,57 @@ impl App {
         pending.sending = true;
         pending.error = None;
         let action = pending.action.clone();
+        if let WriteAction::MassSend { plan } = &action {
+            let plan = plan.clone();
+            let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            self.mass = Some(MassStatus {
+                total: plan.recipients.len(),
+                sent: 0,
+                failed: 0,
+                last_error: None,
+                running: true,
+                stop: stop.clone(),
+            });
+            let (tx, egui, api) = (self.tx.clone(), self.egui.clone(), self.api.clone());
+            self.rt.spawn(async move {
+                let (mut sent, mut failed) = (0, 0);
+                let total = plan.recipients.len();
+                for (index, (user_id, name, copies)) in plan.recipients.iter().enumerate() {
+                    if stop.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    let result = endpoints::send_trade(&api, me, *user_id, &plan.give_ids, copies, plan.give_robux, 0, None).await;
+                    let error = match result {
+                        Ok(()) => {
+                            sent += 1;
+                            None
+                        }
+                        Err(error) => {
+                            failed += 1;
+                            Some(format!("{name}: {error}"))
+                        }
+                    };
+                    let done = index + 1 == total;
+                    if tx.send(Msg::MassProgress { sent, failed, error, done }).is_ok() {
+                        egui.request_repaint();
+                    }
+                    if done {
+                        break;
+                    }
+                    for _ in 0..MASS_GAP_SECS {
+                        if stop.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                    }
+                }
+                let _ = tx.send(Msg::MassProgress { sent, failed, error: None, done: true });
+                egui.request_repaint();
+            });
+            let cx = self.cx();
+            cx.spawn(async move { Msg::WriteDone(action, Ok(())) });
+            return;
+        }
         if let WriteAction::SendChat { conversation_id, user_id, text, .. } = &action {
             let (conversation_id, user_id, text) = (*conversation_id, *user_id, text.clone());
             let tx = self.tx.clone();
@@ -2274,6 +2812,7 @@ impl App {
                 }
                 // Handled above.
                 WriteAction::SendChat { .. } => Ok(()),
+                WriteAction::MassSend { .. } => Ok(()),
             };
             let result = result.map_err(|error| match error {
                 // A write that lost its connection may still have landed.
@@ -2521,6 +3060,10 @@ impl App {
                 // The thread already shows it (Msg::ChatSent); no banner needed.
                 return;
             }
+            WriteAction::MassSend { plan } => {
+                self.trade_builder = None;
+                format!("Sending to {} owners, one every {MASS_GAP_SECS} seconds. Progress is shown at the top.", plan.recipients.len())
+            }
         };
         self.notice = Some((true, message));
     }
@@ -2689,6 +3232,8 @@ impl App {
             filter_theirs: String::new(),
             give_robux: robux.0.filter(|amount| *amount > 0).map(|amount| amount.to_string()).unwrap_or_default(),
             get_robux: robux.1.filter(|amount| *amount > 0).map(|amount| amount.to_string()).unwrap_or_default(),
+            want_give: Vec::new(),
+            want_get: Vec::new(),
         });
         for owner in [me, partner_id] {
             let cx = self.cx();
@@ -2740,6 +3285,12 @@ impl App {
             View::Inventory => self.inventory.data = Load::Idle,
             View::Money => self.money.data = Load::Idle,
             View::Messages => self.messages.data = Load::Idle,
+            View::Market => {
+                self.market.changes = Load::Idle;
+                self.market.sales = Load::Idle;
+                self.market.ads = Load::Idle;
+                self.market.leaderboard = Load::Idle;
+            }
             View::Chat => {
                 self.chat.list = Load::Idle;
                 if let Some(id) = self.chat.open_conversation() {
@@ -2781,6 +3332,7 @@ impl App {
             View::Money => self.load_money(),
             View::Messages => self.load_messages(),
             View::Chat => self.load_chat(),
+            View::Market => self.load_market(),
             View::Trades => self.load_trades(),
             View::Settings => {}
         }
@@ -2834,6 +3386,7 @@ impl App {
         self.messages = MessagesState::default();
         self.trades = TradesState::default();
         self.chat = ChatState::default();
+        self.market = MarketState::default();
         self.view = View::Home;
     }
 
@@ -3022,8 +3575,12 @@ impl App {
                 if let Some(builder) = self.trade_builder.as_mut() {
                     if Some(owner) == me {
                         builder.mine = into_load(result);
+                        let wanted = std::mem::take(&mut builder.want_give);
+                        pick_assets(&builder.mine, &wanted, &mut builder.give);
                     } else if owner == builder.partner_id {
                         builder.theirs = into_load(result);
+                        let wanted = std::mem::take(&mut builder.want_get);
+                        pick_assets(&builder.theirs, &wanted, &mut builder.get);
                     }
                 }
             }
@@ -3184,6 +3741,47 @@ impl App {
                 }
             }
             Msg::ActivityChanged => self.load_session(),
+            Msg::TradeStats(result) => self.trades.stats = into_load(result),
+            Msg::Owners(asset, result) => {
+                if matches!(&self.catalog.owners, Some((shown, _)) if *shown == asset) {
+                    self.catalog.owners = Some((asset, into_load(result)));
+                }
+            }
+            Msg::MassCandidates(result) => {
+                self.mass_preparing = false;
+                match result {
+                    Ok(plan) => self.ask(WriteAction::MassSend { plan }),
+                    Err(error) => self.notice = Some((false, format!("Mass send: {error}"))),
+                }
+            }
+            Msg::MassProgress { sent, failed, error, done } => {
+                if let Some(mass) = self.mass.as_mut() {
+                    mass.sent = sent;
+                    mass.failed = failed;
+                    if error.is_some() {
+                        mass.last_error = error;
+                    }
+                    if done {
+                        mass.running = false;
+                        self.load_session();
+                    }
+                }
+            }
+            Msg::Purchases(result) => self.purchases = into_load(result),
+            Msg::ValueChanges(result) => match result {
+                Ok(changes) => {
+                    self.notify_changes(&changes);
+                    self.market.changes = Load::Ready(changes);
+                }
+                Err(error) => {
+                    if self.market.changes.ready().is_none() {
+                        self.market.changes = Load::Err(error);
+                    }
+                }
+            },
+            Msg::MarketSales(result) => self.market.sales = into_load(result),
+            Msg::TradeAds(result) => self.market.ads = into_load(result),
+            Msg::Leaderboard(result) => self.market.leaderboard = into_load(result),
             Msg::Values(result) => {
                 self.values_loading = false;
                 match result {
@@ -3194,6 +3792,7 @@ impl App {
                         self.catalog.deal_live.clear();
                         self.values_error = None;
                         self.record_value_history();
+                        self.notify_deals();
                     }
                     Err(error) => {
                         self.values_error = Some(error);
@@ -3272,6 +3871,24 @@ impl App {
     }
 }
 
+/// Picks one copy of each wanted asset (highest RAP first, never twice, at
+/// most four per side).
+fn pick_assets(inventory: &Load<models::TradeInventory>, wanted: &[u64], picked: &mut Vec<u64>) {
+    let Load::Ready(inventory) = inventory else { return };
+    for asset in wanted {
+        if picked.len() >= TRADE_SIDE_LIMIT {
+            break;
+        }
+        if let Some(copy) = inventory
+            .items
+            .iter()
+            .find(|item| item.id == *asset && !picked.contains(&item.user_asset_id))
+        {
+            picked.push(copy.user_asset_id);
+        }
+    }
+}
+
 fn into_load<T>(result: Res<T>) -> Load<T> {
     match result {
         Ok(value) => Load::Ready(value),
@@ -3319,12 +3936,32 @@ impl eframe::App for App {
         self.sync_notify_gate(ctx);
         if self.session.ready().is_some() {
             self.refresh_values();
+            // Value changes every 15 minutes, for their notifications.
+            let due = self
+                .market
+                .changes_read_at
+                .map_or(true, |at| at.elapsed() >= Duration::from_secs(15 * 60));
+            if due {
+                self.load_changes(true);
+            }
         }
 
-        let wanted = format!("{}/{}", self.cfg.theme, self.cfg.accent);
+        let wanted = format!("{}/{}/{}", self.cfg.theme, self.cfg.accent, self.cfg.compact);
         if self.applied_theme != wanted {
             crate::ui::apply_theme(ctx, &self.cfg.theme, &self.cfg.accent);
+            if self.cfg.compact {
+                ctx.style_mut(|style| {
+                    style.spacing.item_spacing = egui::vec2(6.0, 3.0);
+                    style.spacing.button_padding = egui::vec2(6.0, 2.0);
+                    style.spacing.interact_size.y = 18.0;
+                });
+            }
             self.applied_theme = wanted;
+        }
+        let scale = self.cfg.ui_scale.clamp(0.8, 1.5);
+        if (scale - self.applied_scale).abs() > 0.001 {
+            ctx.set_zoom_factor(scale);
+            self.applied_scale = scale;
         }
 
         if self.session.ready().is_some() {
@@ -3355,6 +3992,30 @@ impl eframe::App for App {
                     );
                 }
                 _ => {}
+            }
+        }
+
+        // Shortcuts: Ctrl+1..9 screens, Ctrl+F search, Ctrl+R refresh.
+        let (screen, search, refresh) = ctx.input(|input| {
+            let command = input.modifiers.command;
+            let keys = [
+                egui::Key::Num1, egui::Key::Num2, egui::Key::Num3, egui::Key::Num4, egui::Key::Num5,
+                egui::Key::Num6, egui::Key::Num7, egui::Key::Num8, egui::Key::Num9,
+            ];
+            let screen = if command { keys.iter().position(|key| input.key_pressed(*key)) } else { None };
+            (screen, command && input.key_pressed(egui::Key::F), command && input.key_pressed(egui::Key::R))
+        });
+        if self.session.ready().is_some() && self.pending_write.is_none() {
+            if let Some(index) = screen {
+                if let Some(view) = crate::ui::nav_views().get(index).copied() {
+                    crate::ui::go(self, view);
+                }
+            }
+            if search {
+                self.focus_search = true;
+            }
+            if refresh {
+                self.reload_current_view();
             }
         }
 
@@ -3505,5 +4166,46 @@ mod tests {
         assert!(text.starts_with("Decline trollbait's trade."));
         assert!(text.contains("You would have given (RAP 11,442)"));
         assert!(text.contains("You would have got (RAP 16,500)"));
+    }
+}
+
+/// What each copy cost: purchases (newest first) matched to copies of the same
+/// asset, newest copy first (higher copy ids are newer). Copies without a
+/// matching purchase were traded in or given, so they have no price.
+pub fn paid_per_copy(
+    collectibles: &[models::Collectible],
+    purchases: &HashMap<u64, Vec<u64>>,
+) -> HashMap<u64, u64> {
+    let mut by_asset: HashMap<u64, Vec<&models::Collectible>> = HashMap::new();
+    for item in collectibles {
+        by_asset.entry(item.id).or_default().push(item);
+    }
+    let mut paid = HashMap::new();
+    for (asset, mut copies) in by_asset {
+        let Some(prices) = purchases.get(&asset) else { continue };
+        copies.sort_by(|a, b| b.user_asset_id.cmp(&a.user_asset_id));
+        for (copy, price) in copies.iter().zip(prices.iter()) {
+            paid.insert(copy.user_asset_id, *price);
+        }
+    }
+    paid
+}
+
+#[cfg(test)]
+mod paid_tests {
+    use super::*;
+
+    #[test]
+    fn newest_purchase_goes_to_newest_copy() {
+        let copy = |asset: u64, uaid: u64| models::Collectible { id: asset, user_asset_id: uaid, ..Default::default() };
+        let mine = vec![copy(1, 10), copy(1, 30), copy(2, 20), copy(3, 40)];
+        let mut purchases = HashMap::new();
+        purchases.insert(1, vec![500, 300]);
+        purchases.insert(3, vec![]);
+        let paid = paid_per_copy(&mine, &purchases);
+        assert_eq!(paid.get(&30), Some(&500));
+        assert_eq!(paid.get(&10), Some(&300));
+        assert_eq!(paid.get(&20), None);
+        assert_eq!(paid.get(&40), None);
     }
 }
