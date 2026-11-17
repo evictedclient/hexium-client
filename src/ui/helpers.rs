@@ -26,6 +26,8 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
     ui.add_space(10.0);
     owners(app, ui);
     ui.add_space(10.0);
+    range_send(app, ui);
+    ui.add_space(10.0);
     own_values(app, ui);
 }
 
@@ -300,5 +302,158 @@ fn own_values(app: &mut App, ui: &mut Ui) {
     }
     if let Some((asset, name, value)) = change {
         app.set_override(asset, &name, value);
+    }
+}
+
+/// Step 4: a value range instead of specific items. Generates one trade per
+/// player (their items adding up to the range), for you to review and send.
+fn range_send(app: &mut App, ui: &mut Ui) {
+    ui::eyebrow(ui, "4 · Or ask for a value range");
+    muted(
+        ui,
+        "Uses your offer from step 2. Finds players with valued limiteds around the range and, for each, the combination of up to four of their items that adds up to it. Nothing is sent until you review the list and confirm.",
+    );
+    let generating = matches!(app.trades.helper.proposals, Load::Busy);
+    let running = app.mass.as_ref().is_some_and(|mass| mass.running);
+    ui.horizontal(|ui| {
+        ui.label("Ask for value");
+        app.trades.helper.range_min.retain(|character| character.is_ascii_digit());
+        app.trades.helper.range_max.retain(|character| character.is_ascii_digit());
+        ui.add(egui::TextEdit::singleline(&mut app.trades.helper.range_min).hint_text("min").char_limit(9).desired_width(80.0));
+        ui.label("to");
+        ui.add(egui::TextEdit::singleline(&mut app.trades.helper.range_max).hint_text("max").char_limit(9).desired_width(80.0));
+        ui.label(RichText::new("R$").color(GOLD));
+        let ready = app.helper_range().is_some() && !app.trades.helper.give.is_empty() && !app.values.items.is_empty() && !generating;
+        if ui
+            .add_enabled(ready, egui::Button::new(if generating { "Generating…" } else { "Generate trades" }))
+            .on_hover_text(format!("Proposes up to {} trades (your Mass send limit).", app.mass_cap()))
+            .clicked()
+        {
+            app.helper_generate();
+        }
+    });
+    // Upgrade / downgrade, where they can apply to your offer.
+    let my_count = app.trades.helper.give.len();
+    let can_up = crate::app::RangeRules::upgrade_possible(my_count);
+    let can_down = crate::app::RangeRules::downgrade_possible(my_count);
+    if !can_up {
+        app.trades.helper.range_upgrade = false;
+    }
+    if !can_down {
+        app.trades.helper.range_downgrade = false;
+    }
+    ui.horizontal(|ui| {
+        ui.add_enabled(can_up, egui::Checkbox::new(&mut app.trades.helper.range_upgrade, "Upgrade"))
+            .on_hover_text("Fewer items back than you give, and their best item worth more than yours (e.g. your 3 items for 1 better one).")
+            .on_disabled_hover_text("Needs at least 2 items in your offer.");
+        ui.add_enabled(can_down, egui::Checkbox::new(&mut app.trades.helper.range_downgrade, "Downgrade"))
+            .on_hover_text("More items back than you give, each worth less than your best (e.g. 1 big item for several smaller ones).")
+            .on_disabled_hover_text("Needs 1 to 3 items in your offer (a side holds at most 4).");
+        muted(
+            ui,
+            match (app.trades.helper.range_upgrade, app.trades.helper.range_downgrade) {
+                (false, false) => "Neither ticked: any trade in the range.",
+                (true, false) => "Only upgrades.",
+                (false, true) => "Only downgrades.",
+                (true, true) => "Upgrades or downgrades, no even swaps.",
+            },
+        );
+    });
+    if app.trades.helper.give.is_empty() {
+        muted(ui, "Pick what you offer in step 2 first.");
+    } else if !app.trades.helper.range_min.is_empty() && !app.trades.helper.range_max.is_empty() && app.helper_range().is_none() {
+        ui.label(RichText::new("The minimum has to be above 0 and not above the maximum.").size(11.5).color(ui::DANGER));
+    }
+
+    let mut toggle: Option<usize> = None;
+    let mut all: Option<bool> = None;
+    let mut profile: Option<u64> = None;
+    let mut send = false;
+    match &app.trades.helper.proposals {
+        Load::Busy => {
+            let (done, total) = app.trades.helper.range_progress;
+            waiting(ui, &if total > 0 { format!("players ({done} of {total} checked)") } else { "players to check".to_string() });
+        }
+        Load::Err(error) => failed(ui, &format!("Could not generate trades: {error}")),
+        Load::Idle => {}
+        Load::Ready(proposals) => {
+            if proposals.is_empty() {
+                muted(ui, "No player had items adding up to that range. Try a wider range.");
+            } else {
+                let picked = proposals.iter().filter(|proposal| proposal.selected).count();
+                ui.horizontal(|ui| {
+                    muted(ui, &format!("{} trade(s) proposed · {picked} ticked", proposals.len()));
+                    if ui.small_button("All").clicked() {
+                        all = Some(true);
+                    }
+                    if ui.small_button("None").clicked() {
+                        all = Some(false);
+                    }
+                });
+                egui::ScrollArea::vertical().id_salt("range-proposals").max_height(300.0).auto_shrink([false, true]).show(ui, |ui| {
+                    for (index, proposal) in proposals.iter().enumerate() {
+                        ui.horizontal(|ui| {
+                            let mut ticked = proposal.selected;
+                            if ui.checkbox(&mut ticked, "").changed() {
+                                toggle = Some(index);
+                            }
+                            if ui.link(RichText::new(&proposal.name).font(ui::semibold(12.5))).clicked() {
+                                profile = Some(proposal.user_id);
+                            }
+                            ui.label(
+                                RichText::new(format!("value {}", ui::money(proposal.total as i64)))
+                                    .size(12.0)
+                                    .color(GOLD),
+                            );
+                            match proposal.kind {
+                                crate::app::TradeKind::Upgrade => ui::pill(ui, "UPGRADE", GREEN),
+                                crate::app::TradeKind::Downgrade => ui::pill(ui, "DOWNGRADE", accent()),
+                                crate::app::TradeKind::Even => {}
+                            }
+                        });
+                        ui.horizontal_wrapped(|ui| {
+                            ui.add_space(26.0);
+                            for (_, _, name, value) in &proposal.items {
+                                ui.label(RichText::new(format!("{name} ({})", ui::money(*value as i64))).size(11.5).color(MUTED));
+                            }
+                        });
+                    }
+                });
+                ui.horizontal(|ui| {
+                    let label = format!("Send selected ({})…", picked.min(app.mass_cap()));
+                    send = ui
+                        .add_enabled(picked > 0 && !running, egui::Button::new(label))
+                        .on_hover_text(format!(
+                            "Asks once, listing every trade, then sends one every {} seconds (Settings > Mass send).",
+                            app.mass_gap()
+                        ))
+                        .clicked();
+                    if picked > app.mass_cap() {
+                        muted(ui, &format!("Only the first {} go out (your Mass send limit).", app.mass_cap()));
+                    }
+                    if running {
+                        muted(ui, "A mass send is under way.");
+                    }
+                });
+            }
+        }
+    }
+    if let Load::Ready(proposals) = &mut app.trades.helper.proposals {
+        if let Some(index) = toggle {
+            if let Some(proposal) = proposals.get_mut(index) {
+                proposal.selected = !proposal.selected;
+            }
+        }
+        if let Some(on) = all {
+            for proposal in proposals.iter_mut() {
+                proposal.selected = on;
+            }
+        }
+    }
+    if let Some(id) = profile {
+        app.open_profile(id);
+    }
+    if send {
+        app.helper_send_proposals();
     }
 }

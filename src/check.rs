@@ -953,6 +953,20 @@ async fn run_all(client: &ApiClient) -> Vec<Row> {
     }
     {
         let started = Instant::now();
+        let (verdict, detail) = match endpoints::collectibles_all(client, me).await {
+            Ok(all) => {
+                let quick = endpoints::collectibles(client, me).await.map(|items| items.len()).unwrap_or(0);
+                (
+                    if all.len() >= quick { Verdict::Pass } else { Verdict::Fail },
+                    format!("{} collectibles read in full (the quick read sees {quick})", all.len()),
+                )
+            }
+            Err(error) => (Verdict::Fail, error.to_string()),
+        };
+        rows.push(Row { name: "inventory collectibles (paged)", detail, verdict, ms: started.elapsed().as_millis() });
+    }
+    {
+        let started = Instant::now();
         let (verdict, detail) = match endpoints::asset_owners(client, 907, 2).await {
             Ok(owners) => (
                 if owners.is_empty() { Verdict::Warn } else { Verdict::Pass },

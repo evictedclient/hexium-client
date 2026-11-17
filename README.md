@@ -78,6 +78,11 @@ Not affiliated with hexium.wtf or Roblox.
   them, or mass-send the offer (after one confirmation listing them, skipping anyone you already
   trade with, with Stop). How many people (1–50, default 10) and the wait between trades
   (10–600 s, default 30) are set in Settings > Mass send.
+  Or ask for a **value range**: the helper finds players whose items add up to it (up to four
+  items each), lists one proposed trade per player for you to tick or untick, and sends the
+  ticked ones the same way.
+  Tick **Upgrade** (fewer, better items back) and/or **Downgrade** (more, smaller items back)
+  to only get that kind of trade; each proposal is labelled.
 - **Your own values**: set a value on any limited; it replaces Heximons' (or adds one)
   everywhere values are used, and is labelled "Your value".
 - **Trade stats** over your last 40 completed trades, and an Owners list on every limited.

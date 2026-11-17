@@ -167,6 +167,9 @@ pub enum Msg {
     Owners(u64, Res<Vec<endpoints::AssetOwner>>),
     /// Owners for the trade helpers: (the wanted assets, result).
     HelperOwners(Vec<u64>, Res<Vec<Candidate>>),
+    /// Value-range generation: players checked so far, of how many.
+    RangeProgress(usize, usize),
+    RangeProposals(Res<Vec<Proposal>>),
     MassProgress { sent: usize, failed: usize, error: Option<String>, done: bool },
     Purchases(Res<HashMap<u64, Vec<u64>>>),
     ValueChanges(Res<Vec<crate::values::ValueChange>>),
@@ -597,12 +600,20 @@ fn chat_summary(recipient: &str, starts: bool, text: &str) -> String {
 
 fn mass_summary(plan: &MassPlan) -> String {
     let names: Vec<&str> = plan.assets.iter().map(|(_, name)| name.as_str()).collect();
-    let mut out = format!(
-        "Send the same trade to {} owners of {}, one every {} seconds.\n\n",
-        plan.recipients.len(),
-        names.join(" + "),
-        plan.gap_secs
-    );
+    let mut out = if plan.details.is_empty() {
+        format!(
+            "Send the same trade to {} owners of {}, one every {} seconds.\n\n",
+            plan.recipients.len(),
+            names.join(" + "),
+            plan.gap_secs
+        )
+    } else {
+        format!(
+            "Send these {} trades, one every {} seconds. Each asks a different player for different items.\n\n",
+            plan.recipients.len(),
+            plan.gap_secs
+        )
+    };
     out.push_str(&format!("You give each of them (RAP {})\n", group_digits(plan.give.rap)));
     for (name, rap, serial) in &plan.give.items {
         let serial = serial.map(|serial| format!("  #{serial}")).unwrap_or_default();
@@ -612,8 +623,11 @@ fn mass_summary(plan: &MassPlan) -> String {
         out.push_str(&format!("   · plus {} R$\n", group_digits(plan.give_robux)));
     }
     out.push_str("\nTo:\n");
-    for (_, name, copies) in &plan.recipients {
-        out.push_str(&format!("   · {name} ({} item(s))\n", copies.len()));
+    for (index, (_, name, copies)) in plan.recipients.iter().enumerate() {
+        match plan.details.get(index) {
+            Some(detail) => out.push_str(&format!("   · {name}: {detail}\n")),
+            None => out.push_str(&format!("   · {name} ({} item(s))\n", copies.len())),
+        }
     }
     if plan.skipped > 0 {
         out.push_str(&format!("\n{} other owner(s) left out (already trading with you, or past your limit of {}).\n", plan.skipped, plan.cap));
@@ -829,6 +843,16 @@ pub struct TradeHelper {
     pub owners: Load<Vec<Candidate>>,
     /// The wanted items the owners list was found for.
     pub owners_for: Vec<u64>,
+    /// Value-range mass send: the range asked for, the generated trades, and
+    /// progress while generating (players checked, players to check).
+    pub range_min: String,
+    pub range_max: String,
+    pub proposals: Load<Vec<Proposal>>,
+    pub range_progress: (usize, usize),
+    /// Only upgrades (fewer, better items back) and/or downgrades (more,
+    /// smaller items back). Neither ticked: any trade in the range.
+    pub range_upgrade: bool,
+    pub range_downgrade: bool,
 }
 
 /// Someone who owns every wanted item.
@@ -877,6 +901,43 @@ pub struct MassPlan {
     /// The cap and pacing this send was planned with.
     pub cap: usize,
     pub gap_secs: u64,
+    /// For value-range sends: what each recipient is asked for, in words
+    /// (same order as `recipients`). Empty when everyone is asked the same.
+    pub details: Vec<String>,
+}
+
+/// A generated value-range trade, waiting for your review.
+#[derive(Debug, Clone, Default)]
+pub struct Proposal {
+    pub user_id: u64,
+    pub name: String,
+    /// Their items asked for: (copy id, asset id, name, value).
+    pub items: Vec<(u64, u64, String, u64)>,
+    pub total: u64,
+    /// Ticked for sending.
+    pub selected: bool,
+    /// What kind of trade this is for you.
+    pub kind: TradeKind,
+}
+
+/// Upgrade: fewer items back, with a better best item. Downgrade: more items
+/// back, each smaller than your best. Even: anything else in the range.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TradeKind {
+    #[default]
+    Even,
+    Upgrade,
+    Downgrade,
+}
+
+impl TradeKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            TradeKind::Even => "",
+            TradeKind::Upgrade => "UPGRADE",
+            TradeKind::Downgrade => "DOWNGRADE",
+        }
+    }
 }
 
 /// Progress of a mass send under way.
@@ -2100,6 +2161,161 @@ impl App {
     }
 
     /// Mass send to the owners found (not busy), newest first, capped; asks first.
+    /// The value range typed in the helper, if it is a valid one.
+    pub fn helper_range(&self) -> Option<(u64, u64)> {
+        let min: u64 = self.trades.helper.range_min.parse().ok()?;
+        let max: u64 = self.trades.helper.range_max.parse().ok()?;
+        (min > 0 && min <= max).then_some((min, max))
+    }
+
+    /// Generates value-range trades for review: finds players who own valued
+    /// limiteds around the range, reads their collectibles, and for each picks
+    /// up to four of their items whose total value is closest to the middle of
+    /// the range (only totals inside the range count). Skips you, the site's
+    /// account, players you already trade with, and private inventories.
+    pub fn helper_generate(&mut self) {
+        let Some(me) = self.me_id() else { return };
+        let Some((min, max)) = self.helper_range() else { return };
+        if self.trades.helper.give.is_empty() || self.values.items.is_empty() {
+            return;
+        }
+        let cap = self.mass_cap();
+        let values = self.values.clone();
+        // Your side, for the upgrade / downgrade rules: how many items, and the best one.
+        let my_values: Vec<u64> = self
+            .inventory
+            .data
+            .ready()
+            .map(|bundle| {
+                bundle
+                    .collectibles
+                    .iter()
+                    .filter(|item| self.trades.helper.give.contains(&item.user_asset_id))
+                    .map(|item| self.values.value_or(item.id, item.rap))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let rules = RangeRules {
+            min,
+            max,
+            my_count: my_values.len(),
+            my_best: my_values.iter().copied().max().unwrap_or(0),
+            upgrade: self.trades.helper.range_upgrade,
+            downgrade: self.trades.helper.range_downgrade,
+        };
+        // Items you are giving away should not come back to you.
+        let giving: std::collections::HashSet<u64> = self
+            .inventory
+            .data
+            .ready()
+            .map(|bundle| {
+                bundle
+                    .collectibles
+                    .iter()
+                    .filter(|item| self.trades.helper.give.contains(&item.user_asset_id))
+                    .map(|item| item.id)
+                    .collect()
+            })
+            .unwrap_or_default();
+        // Valued items that could make up (part of) the range, biggest first.
+        let mut seeds: Vec<(u64, u64)> = values
+            .items
+            .iter()
+            .filter(|(asset, item)| item.value > 0 && item.value <= max && item.value >= (min / 4).max(1) && !giving.contains(asset))
+            .map(|(asset, item)| (*asset, item.value))
+            .collect();
+        seeds.sort_by(|a, b| b.1.cmp(&a.1));
+        seeds.truncate(12);
+        self.trades.helper.proposals = Load::Busy;
+        self.trades.helper.range_progress = (0, 0);
+        let (tx, egui) = (self.tx.clone(), self.egui.clone());
+        let cx = self.cx();
+        let api = cx.api.clone();
+        cx.spawn(async move {
+            let busy: std::collections::HashSet<u64> = endpoints::trades(&api, "outbound", None)
+                .await
+                .map(|page| page.items.iter().map(|trade| trade.partner_id).collect())
+                .unwrap_or_default();
+            // Players to look at, in the order their items were found.
+            let mut players: Vec<(u64, String)> = Vec::new();
+            for (asset, _) in &seeds {
+                if let Ok(owners) = endpoints::asset_owners(&api, *asset, 1).await {
+                    for owner in owners {
+                        if owner.user_id != me && owner.user_id > 1 && !busy.contains(&owner.user_id)
+                            && !players.iter().any(|(id, _)| *id == owner.user_id)
+                        {
+                            players.push((owner.user_id, owner.name));
+                        }
+                    }
+                }
+                if players.len() >= 40 {
+                    break;
+                }
+            }
+            players.truncate(40);
+            let total = players.len();
+            let middle = min + (max - min) / 2;
+            let mut found: Vec<Proposal> = Vec::new();
+            for (index, (user_id, name)) in players.into_iter().enumerate() {
+                if tx.send(Msg::RangeProgress(index, total)).is_ok() {
+                    egui.request_repaint();
+                }
+                let Ok(items) = endpoints::collectibles_all(&api, user_id).await else { continue };
+                let priced = range_candidates(&items, &giving, &values, max);
+                if let Some((picked, kind)) = rules.pick(&priced) {
+                    let chosen: Vec<(u64, u64, String, u64)> = picked
+                        .iter()
+                        .filter_map(|id| items.iter().find(|item| item.user_asset_id == *id))
+                        .map(|item| (item.user_asset_id, item.id, item.name.clone(), values.value_or(item.id, item.rap)))
+                        .collect();
+                    let sum: u64 = chosen.iter().map(|(.., value)| value).sum();
+                    found.push(Proposal { user_id, name, items: chosen, total: sum, selected: true, kind });
+                    if found.len() >= cap {
+                        break;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+            // Closest to the middle of the range first.
+            found.sort_by_key(|proposal| proposal.total.abs_diff(middle));
+            Msg::RangeProposals(Ok(found))
+        });
+    }
+
+    /// Sends the ticked value-range trades (after the usual confirmation).
+    pub fn helper_send_proposals(&mut self) {
+        let Load::Ready(proposals) = &self.trades.helper.proposals else { return };
+        let chosen: Vec<&Proposal> = proposals.iter().filter(|proposal| proposal.selected).take(self.mass_cap()).collect();
+        if chosen.is_empty() || self.trades.helper.give.is_empty() {
+            return;
+        }
+        let plan = MassPlan {
+            give_ids: self.trades.helper.give.clone(),
+            give_robux: self.trades.helper.give_robux.parse().unwrap_or(0),
+            give: self.helper_give_side(),
+            assets: Vec::new(),
+            recipients: chosen
+                .iter()
+                .map(|proposal| (proposal.user_id, proposal.name.clone(), proposal.items.iter().map(|(copy, ..)| *copy).collect()))
+                .collect(),
+            skipped: 0,
+            cap: self.mass_cap(),
+            gap_secs: self.mass_gap(),
+            details: chosen
+                .iter()
+                .map(|proposal| {
+                    let names: Vec<&str> = proposal.items.iter().map(|(_, _, name, _)| name.as_str()).collect();
+                    let kind = match proposal.kind {
+                        TradeKind::Even => String::new(),
+                        other => format!("[{}] ", other.label().to_lowercase()),
+                    };
+                    format!("{kind}{} (value {})", names.join(" + "), group_digits(proposal.total))
+                })
+                .collect(),
+        };
+        self.ask(WriteAction::MassSend { plan });
+    }
+
     pub fn helper_mass_send(&mut self) {
         let Load::Ready(owners) = &self.trades.helper.owners else { return };
         if self.trades.helper.give.is_empty() {
@@ -2126,6 +2342,7 @@ impl App {
             skipped,
             cap,
             gap_secs: self.mass_gap(),
+            details: Vec::new(),
         };
         self.ask(WriteAction::MassSend { plan });
     }
@@ -3844,6 +4061,8 @@ impl App {
                     self.catalog.owners = Some((asset, into_load(result)));
                 }
             }
+            Msg::RangeProgress(done, total) => self.trades.helper.range_progress = (done, total),
+            Msg::RangeProposals(result) => self.trades.helper.proposals = into_load(result),
             Msg::HelperOwners(assets, result) => {
                 if self.trades.helper.owners_for == assets {
                     self.trades.helper.owners = into_load(result);
@@ -4274,6 +4493,27 @@ mod tests {
     }
 
     #[test]
+    fn mass_summary_lists_each_trade() {
+        let (give, _) = sample();
+        let plan = MassPlan {
+            give_ids: vec![1, 2],
+            give,
+            recipients: vec![(7, "Alpha".to_string(), vec![70]), (8, "Beta".to_string(), vec![80, 81])],
+            cap: 10,
+            gap_secs: 45,
+            details: vec!["Ghosdeeri (value 5,500)".to_string(), "Red Domino Crown + Tixvalk (value 5,900)".to_string()],
+            ..Default::default()
+        };
+        let text = mass_summary(&plan);
+        assert!(text.starts_with("Send these 2 trades, one every 45 seconds."));
+        assert!(text.contains("   · Alpha: Ghosdeeri (value 5,500)\n"));
+        assert!(text.contains("   · Beta: Red Domino Crown + Tixvalk (value 5,900)\n"));
+        // Same-items sends keep the owners wording.
+        let owners = MassPlan { details: Vec::new(), assets: vec![(1, "Ghosdeeri".to_string())], ..plan };
+        assert!(mass_summary(&owners).starts_with("Send the same trade to 2 owners of Ghosdeeri, one every 45 seconds."));
+    }
+
+    #[test]
     fn offer_summary_lists_robux() {
         let (mut give, mut get) = sample();
         give.robux = Some(1500);
@@ -4336,5 +4576,151 @@ mod paid_tests {
         assert_eq!(paid.get(&10), Some(&300));
         assert_eq!(paid.get(&20), None);
         assert_eq!(paid.get(&40), None);
+    }
+}
+
+/// A player's items that a value-range trade may ask for: valued, no more than
+/// the range's top, and never an item you are offering in the same trade (no
+/// "A for A + B").
+pub fn range_candidates(
+    items: &[models::Collectible],
+    giving: &std::collections::HashSet<u64>,
+    values: &crate::values::Values,
+    max: u64,
+) -> Vec<(u64, u64)> {
+    items
+        .iter()
+        .filter(|item| !giving.contains(&item.id))
+        .map(|item| (item.user_asset_id, values.value_or(item.id, item.rap)))
+        .filter(|(_, value)| *value > 0 && *value <= max)
+        .collect()
+}
+
+#[cfg(test)]
+mod range_tests {
+    use super::*;
+
+    #[test]
+    fn never_asks_for_what_you_offer() {
+        let copy = |asset: u64, copy: u64, rap: u64| models::Collectible { id: asset, user_asset_id: copy, rap, ..Default::default() };
+        // They own item A (asset 1), which you are offering, plus B and C.
+        let theirs = vec![copy(1, 10, 3000), copy(2, 20, 2500), copy(3, 30, 9000)];
+        let giving: std::collections::HashSet<u64> = [1].into_iter().collect();
+        let picked = range_candidates(&theirs, &giving, &crate::values::Values::default(), 5000);
+        // A is left out because you offer it; C is above the range's top.
+        assert_eq!(picked, vec![(20, 2500)]);
+    }
+}
+
+/// The rules a value-range trade's other side must meet.
+#[derive(Debug, Clone, Copy)]
+pub struct RangeRules {
+    pub min: u64,
+    pub max: u64,
+    /// How many items you give, and your best item's value.
+    pub my_count: usize,
+    pub my_best: u64,
+    pub upgrade: bool,
+    pub downgrade: bool,
+}
+
+impl RangeRules {
+    /// The best combination of the player's items (copy id, value) for these
+    /// rules: total inside the range and closest to its middle; with Upgrade
+    /// and/or Downgrade ticked, only combinations of that kind.
+    pub fn pick(&self, items: &[(u64, u64)]) -> Option<(Vec<u64>, TradeKind)> {
+        let middle = self.min + (self.max - self.min) / 2;
+        let mut pool: Vec<(u64, u64)> = items.iter().copied().filter(|(_, value)| *value > 0 && *value <= self.max).collect();
+        pool.sort_by(|a, b| b.1.cmp(&a.1));
+        pool.truncate(40);
+        let mut best: Option<(u64, usize, Vec<u64>, TradeKind)> = None;
+        let mut consider = |picked: &[usize]| {
+            let sum: u64 = picked.iter().map(|index| pool[*index].1).sum();
+            if sum < self.min || sum > self.max {
+                return;
+            }
+            let top = picked.iter().map(|index| pool[*index].1).max().unwrap_or(0);
+            let kind = if picked.len() < self.my_count && top > self.my_best {
+                TradeKind::Upgrade
+            } else if picked.len() > self.my_count && top < self.my_best {
+                TradeKind::Downgrade
+            } else {
+                TradeKind::Even
+            };
+            let wanted = match (self.upgrade, self.downgrade) {
+                (false, false) => true,
+                (true, false) => kind == TradeKind::Upgrade,
+                (false, true) => kind == TradeKind::Downgrade,
+                (true, true) => kind != TradeKind::Even,
+            };
+            if !wanted {
+                return;
+            }
+            let score = (sum.abs_diff(middle), picked.len());
+            if best.as_ref().map_or(true, |(distance, count, ..)| score < (*distance, *count)) {
+                best = Some((score.0, score.1, picked.iter().map(|index| pool[*index].0).collect(), kind));
+            }
+        };
+        let n = pool.len();
+        for a in 0..n {
+            consider(&[a]);
+            for b in a + 1..n {
+                consider(&[a, b]);
+                for c in b + 1..n {
+                    consider(&[a, b, c]);
+                    for d in c + 1..n {
+                        consider(&[a, b, c, d]);
+                    }
+                }
+            }
+        }
+        best.map(|(_, _, picked, kind)| (picked, kind))
+    }
+
+    /// Whether Upgrade / Downgrade can apply to an offer of this many items.
+    pub fn upgrade_possible(my_count: usize) -> bool {
+        my_count >= 2
+    }
+
+    pub fn downgrade_possible(my_count: usize) -> bool {
+        my_count >= 1 && my_count < TRADE_SIDE_LIMIT
+    }
+}
+
+#[cfg(test)]
+mod upgrade_tests {
+    use super::*;
+
+    // Their items: one big (5000), and smaller ones.
+    const THEIRS: [(u64, u64); 5] = [(1, 5000), (2, 2000), (3, 1800), (4, 1500), (5, 1200)];
+
+    fn rules(my_count: usize, my_best: u64, upgrade: bool, downgrade: bool) -> RangeRules {
+        RangeRules { min: 4500, max: 5500, my_count, my_best, upgrade, downgrade }
+    }
+
+    #[test]
+    fn upgrade_wants_fewer_better_items() {
+        // You give 3 items, best worth 2000: an upgrade is their single 5000 item.
+        let (picked, kind) = rules(3, 2000, true, false).pick(&THEIRS).unwrap();
+        assert_eq!((picked, kind), (vec![1], TradeKind::Upgrade));
+    }
+
+    #[test]
+    fn downgrade_wants_more_smaller_items() {
+        // You give 1 item worth 5000: a downgrade is several of their smaller ones.
+        let (picked, kind) = rules(1, 5000, false, true).pick(&THEIRS).unwrap();
+        assert_eq!(kind, TradeKind::Downgrade);
+        assert!(picked.len() > 1 && !picked.contains(&1));
+    }
+
+    #[test]
+    fn impossible_kinds_find_nothing_and_neither_means_any() {
+        // One item can't be upgraded into fewer items.
+        assert!(rules(1, 5000, true, false).pick(&THEIRS).is_none());
+        // Nothing ticked: the closest to the middle of the range, whatever kind.
+        let (picked, _) = rules(1, 5000, false, false).pick(&THEIRS).unwrap();
+        assert_eq!(picked, vec![1]);
+        assert!(!RangeRules::upgrade_possible(1) && RangeRules::upgrade_possible(2));
+        assert!(RangeRules::downgrade_possible(3) && !RangeRules::downgrade_possible(4));
     }
 }

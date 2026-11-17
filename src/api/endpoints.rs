@@ -1674,3 +1674,26 @@ pub async fn trade_offers(client: &ApiClient, id: u64) -> Result<TradeDetail> {
     let value = client.get(&api("trades", &format!("/v1/trades/{id}"))).await?;
     Ok(TradeDetail::from_value(&value))
 }
+
+/// All of a player's collectibles (up to 5 pages of 100), without thumbnails.
+pub async fn collectibles_all(client: &ApiClient, id: u64) -> Result<Vec<Collectible>> {
+    let path = api("inventory", &format!("/v1/users/{id}/assets/collectibles"));
+    let mut items = Vec::new();
+    let mut cursor = String::new();
+    for _ in 0..5 {
+        let value = client
+            .get_query(&path, &[("limit", "100".to_string()), ("cursor", cursor.clone())])
+            .await?;
+        items.extend(
+            first_array(&value, &["data"])
+                .iter()
+                .map(Collectible::from_value)
+                .filter(|item| item.id != 0 && item.user_asset_id != 0),
+        );
+        match value.get("nextPageCursor").and_then(Value::as_str) {
+            Some(next) if !next.is_empty() => cursor = next.to_string(),
+            _ => break,
+        }
+    }
+    Ok(items)
+}
