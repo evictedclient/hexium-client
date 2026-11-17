@@ -29,6 +29,11 @@ mod field {
     pub const RARE: usize = 21;
     pub const VALUE: usize = 22;
     pub const ID: usize = 25;
+    /// Cheapest listing Heximons last saw (matched against the page's labelled
+    /// objects: all 427 items with sellers agree; null when nobody sells).
+    pub const BEST_PRICE: usize = 5;
+    /// Hexium CDN thumbnail.
+    pub const THUMB: usize = 23;
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -45,6 +50,12 @@ pub struct ItemValue {
     /// 1 Unstable, 2 Stable, 3 Raising, 4 Fluctuating.
     pub trend: Option<u8>,
     pub rare: bool,
+    /// Cheapest listing when Heximons last looked.
+    #[serde(default)]
+    pub best_price: Option<u64>,
+    /// Thumbnail on hexium.wtf's image server.
+    #[serde(default)]
+    pub thumb: Option<String>,
 }
 
 impl ItemValue {
@@ -133,6 +144,8 @@ pub fn parse(html: &str) -> Result<HashMap<u64, ItemValue>, String> {
                 demand: number(at(field::DEMAND)).map(|demand| demand as u8),
                 trend: number(at(field::TREND)).map(|trend| trend as u8),
                 rare: number(at(field::RARE)) == Some(1),
+                best_price: number(at(field::BEST_PRICE)).filter(|price| *price > 0),
+                thumb: at(field::THUMB).as_str().filter(|url| url.starts_with("https://")).map(str::to_string),
             },
         );
     }
@@ -242,5 +255,185 @@ pub fn record_history(history: &mut Vec<HistoryPoint>, rap: u64, value: u64) {
     if let Ok(text) = serde_json::to_string(history) {
         let _ = std::fs::create_dir_all(crate::config::config_dir());
         let _ = std::fs::write(history_path(), text);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Deals: listings well below their value
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Deal {
+    pub asset_id: u64,
+    pub name: String,
+    pub price: u64,
+    pub value: u64,
+    pub staff_valued: bool,
+    /// How far below value, in percent.
+    pub discount: f32,
+}
+
+/// Items whose best price is at least `min_discount` percent below their value
+/// (the staff value, otherwise RAP), biggest discount first.
+pub fn deals(values: &Values, min_discount: f32, staff_only: bool) -> Vec<Deal> {
+    let mut found: Vec<Deal> = values
+        .items
+        .iter()
+        .filter_map(|(asset_id, item)| {
+            let price = item.best_price?;
+            if item.value == 0 || price >= item.value || (staff_only && item.staff_value.is_none()) {
+                return None;
+            }
+            let discount = (item.value - price) as f32 / item.value as f32 * 100.0;
+            (discount >= min_discount).then(|| Deal {
+                asset_id: *asset_id,
+                name: item.name.clone(),
+                price,
+                value: item.value,
+                staff_valued: item.staff_value.is_some(),
+                discount,
+            })
+        })
+        .collect();
+    found.sort_by(|a, b| b.discount.total_cmp(&a.discount).then(a.name.cmp(&b.name)));
+    found
+}
+
+// ---------------------------------------------------------------------------
+// A player's value history (heximons.lol/player/{id})
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct PlayerPoint {
+    /// Seconds since 1970.
+    pub time: u64,
+    pub value: u64,
+    pub rap: u64,
+    pub collectibles: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PlayerStats {
+    pub rank: Option<u64>,
+    /// Oldest first.
+    pub points: Vec<PlayerPoint>,
+}
+
+impl PlayerStats {
+    pub fn latest(&self) -> Option<PlayerPoint> {
+        self.points.last().copied()
+    }
+}
+
+/// The JSON object assigned to `var <name> = {...};` in a page.
+fn embedded(html: &str, name: &str) -> Option<Value> {
+    let at = html.find(&format!("var {name}"))?;
+    let start = at + html[at..].find('{')?;
+    let end = start + html[start..].find("};")? + 1;
+    serde_json::from_str(&html[start..end]).ok()
+}
+
+/// Reads `chart_data` (parallel `nominal_scan_time`, `value`, `rap`,
+/// `num_limiteds` arrays) and the rank from `player_details_data`.
+pub fn parse_player(html: &str) -> Result<PlayerStats, String> {
+    let chart = embedded(html, "chart_data").ok_or("the Heximons player page has no value history")?;
+    let series = |key: &str| -> Vec<u64> {
+        chart
+            .get(key)
+            .and_then(Value::as_array)
+            .map(|items| items.iter().map(|item| number(item).unwrap_or(0)).collect())
+            .unwrap_or_default()
+    };
+    let times = series("nominal_scan_time");
+    let (value, rap, count) = (series("value"), series("rap"), series("num_limiteds"));
+    let points = times
+        .iter()
+        .enumerate()
+        .filter(|(_, time)| **time > 0)
+        .map(|(index, time)| PlayerPoint {
+            time: *time,
+            value: value.get(index).copied().unwrap_or(0),
+            rap: rap.get(index).copied().unwrap_or(0),
+            collectibles: count.get(index).copied().unwrap_or(0),
+        })
+        .collect::<Vec<_>>();
+    let rank = embedded(html, "player_details_data")
+        .and_then(|details| details.get("rank").and_then(number))
+        .filter(|rank| *rank > 0);
+    let mut points = points;
+    points.sort_by_key(|point| point.time);
+    Ok(PlayerStats { rank, points })
+}
+
+/// A player's Heximons stats; `Ok(None)` when Heximons does not track them.
+pub async fn fetch_player(user_id: u64) -> Result<Option<PlayerStats>, String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .user_agent(USER_AGENT)
+        .build()
+        .map_err(|error| error.to_string())?;
+    let response = client
+        .get(format!("https://heximons.lol/player/{user_id}"))
+        .send()
+        .await
+        .map_err(|error| format!("could not reach heximons.lol: {error}"))?;
+    if response.status().as_u16() == 404 {
+        return Ok(None);
+    }
+    if !response.status().is_success() {
+        return Err(format!("heximons.lol answered HTTP {}", response.status().as_u16()));
+    }
+    let html = response.text().await.map_err(|error| error.to_string())?;
+    parse_player(&html).map(Some)
+}
+
+pub fn player_url(user_id: u64) -> String {
+    format!("https://heximons.lol/player/{user_id}")
+}
+
+pub fn item_url(asset_id: u64) -> String {
+    format!("https://heximons.lol/item/{asset_id}")
+}
+
+#[cfg(test)]
+mod more_tests {
+    use super::*;
+
+    #[test]
+    fn deals_sort_by_discount() {
+        let mut values = Values::default();
+        let item = |name: &str, value: u64, staff: bool, best: Option<u64>| ItemValue {
+            name: name.to_string(),
+            value,
+            staff_value: staff.then_some(value),
+            best_price: best,
+            ..Default::default()
+        };
+        values.items.insert(1, item("Half", 1000, true, Some(500)));
+        values.items.insert(2, item("Tenth off", 1000, false, Some(900)));
+        values.items.insert(3, item("Pricier", 1000, true, Some(1200)));
+        values.items.insert(4, item("Nobody selling", 1000, true, None));
+        values.items.insert(5, item("Quarter", 400, false, Some(300)));
+        let all = deals(&values, 5.0, false);
+        let names: Vec<&str> = all.iter().map(|deal| deal.name.as_str()).collect();
+        assert_eq!(names, vec!["Half", "Quarter", "Tenth off"]);
+        assert!((all[0].discount - 50.0).abs() < 0.01);
+        assert_eq!(deals(&values, 20.0, false).len(), 2);
+        assert_eq!(deals(&values, 5.0, true).len(), 1);
+    }
+
+    /// The player page's shape (values made up).
+    #[test]
+    fn parses_player_history() {
+        let html = r#"<script>var player_details_data = {"player_id":14028,"player_name":"zest","rank":419};
+            var chart_data = {"num_points":3,"nominal_scan_time":[1794210574,1794210803,1794211257],
+            "value":[13000,13200,13390],"rap":[10900,10950,10956],"num_limiteds":[15,15,16]};
+            var old_chart_data = {"num_points":0};</script>"#;
+        let stats = parse_player(html).unwrap();
+        assert_eq!(stats.rank, Some(419));
+        assert_eq!(stats.points.len(), 3);
+        let latest = stats.latest().unwrap();
+        assert_eq!((latest.value, latest.rap, latest.collectibles), (13390, 10956, 16));
+        assert!(parse_player("<html></html>").is_err());
     }
 }

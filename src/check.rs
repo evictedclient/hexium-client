@@ -868,6 +868,44 @@ async fn run_all(client: &ApiClient) -> Vec<Row> {
         };
         rows.push(Row { name: "heximons.lol values", detail, verdict, ms: started.elapsed().as_millis() });
     }
+    {
+        let started = Instant::now();
+        let (verdict, detail) = match crate::values::fetch().await {
+            Ok(values) => {
+                let priced = values.items.values().filter(|item| item.best_price.is_some()).count();
+                let found = crate::values::deals(&values, 20.0, false);
+                let staff = found.iter().filter(|deal| deal.staff_valued).count();
+                (
+                    if priced > 0 { Verdict::Pass } else { Verdict::Warn },
+                    format!("{priced} with a best price · {} deal(s) at 20%+ off ({staff} on staff values)", found.len()),
+                )
+            }
+            Err(error) => (Verdict::Warn, error),
+        };
+        rows.push(Row { name: "heximons.lol deals", detail, verdict, ms: started.elapsed().as_millis() });
+    }
+    {
+        let started = Instant::now();
+        let (verdict, detail) = match crate::values::fetch_player(me).await {
+            Ok(Some(stats)) => match (stats.points.first(), stats.latest()) {
+                (Some(first), Some(latest)) => (
+                    Verdict::Pass,
+                    format!(
+                        "{} points since {} · value {} · RAP {} · rank {}",
+                        stats.points.len(),
+                        crate::ui::chart::short_date((first.time / 86_400) as i64),
+                        latest.value,
+                        latest.rap,
+                        stats.rank.map(|rank| format!("#{rank}")).unwrap_or_else(|| "none".to_string())
+                    ),
+                ),
+                _ => (Verdict::Warn, "tracked, but no history yet".to_string()),
+            },
+            Ok(None) => (Verdict::Warn, "Heximons does not track you yet".to_string()),
+            Err(error) => (Verdict::Warn, error),
+        };
+        rows.push(Row { name: "heximons.lol player history", detail, verdict, ms: started.elapsed().as_millis() });
+    }
     rows.push(match crate::play::launcher_registered() {
         Some(command) => Row {
             name: "hexium:// launcher",

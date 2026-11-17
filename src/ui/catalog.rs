@@ -13,6 +13,20 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
     watchlist(app, ui);
 
     ui.horizontal(|ui| {
+        if ui.selectable_label(!app.catalog.deals_mode, "Browse").clicked() {
+            app.catalog.deals_mode = false;
+        }
+        if ui.selectable_label(app.catalog.deals_mode, "Deals").clicked() {
+            app.catalog.deals_mode = true;
+        }
+    });
+    ui.add_space(4.0);
+    if app.catalog.deals_mode {
+        deals(app, cx, ui);
+        return;
+    }
+
+    ui.horizontal(|ui| {
         let response = ui.add(
             egui::TextEdit::singleline(&mut app.catalog.keyword)
                 .hint_text("Search the catalog…")
@@ -136,6 +150,9 @@ pub fn dock(app: &mut App, cx: &Ctx, ctx: &egui::Context) {
                         ui::pill(ui, tag, GOLD);
                     }
                     ui::analyze::value_line(ui, &app.values, detail.id);
+                    if detail.limited && ui.link(RichText::new("View on Heximons").size(11.5)).clicked() {
+                        cx.open(&crate::values::item_url(detail.id));
+                    }
                     if detail.resold {
                         ui.label(RichText::new(resale_text(&detail)).color(GOLD));
                     } else if let Some(price) = detail.price {
@@ -405,5 +422,103 @@ fn watchlist(app: &mut App, ui: &mut Ui) {
     }
     if let Some((asset, name)) = remove {
         app.set_watch(asset, &name, None);
+    }
+}
+
+/// Limiteds listed well below their Heximons value, biggest discount first.
+fn deals(app: &mut App, cx: &Ctx, ui: &mut Ui) {
+    if app.catalog.deal_min <= 0.0 {
+        app.catalog.deal_min = 20.0;
+    }
+    muted(
+        ui,
+        "Cheapest listing against value (the Heximons staff value, otherwise RAP). The top rows are checked against hexium.wtf's live prices.",
+    );
+    ui.horizontal(|ui| {
+        ui.label("At least");
+        ui.add(egui::Slider::new(&mut app.catalog.deal_min, 5.0..=80.0).suffix("% off").step_by(5.0));
+        ui.checkbox(&mut app.catalog.deal_staff_only, "Staff values only");
+    });
+    ui.add_space(4.0);
+
+    if app.values.items.is_empty() {
+        match &app.values_error {
+            Some(error) => failed(ui, &format!("No Heximons values yet: {error}")),
+            None => waiting(ui, "values from Heximons"),
+        }
+        return;
+    }
+    let found = crate::values::deals(&app.values, app.catalog.deal_min, app.catalog.deal_staff_only);
+    if found.is_empty() {
+        muted(ui, "Nothing that far below value right now.");
+        return;
+    }
+    muted(ui, &format!("{} deal(s)", found.len()));
+    ui.add_space(2.0);
+
+    let mut open: Option<(u64, String)> = None;
+    let width = (ui.available_width() - 4.0).max(320.0);
+    for (index, deal) in found.iter().enumerate() {
+        // Live prices for the first rows only, to keep requests few.
+        if index < 20 {
+            app.check_deal(deal.asset_id);
+        }
+        let live = app.catalog.deal_live.get(&deal.asset_id).cloned();
+        let thumb = app.values.get(deal.asset_id).and_then(|item| item.thumb.clone());
+        let card = ui::tile_button(ui, width, false, |ui| {
+            ui.horizontal(|ui| {
+                app.thumbs.show(ui, cx, thumb.as_deref(), egui::vec2(48.0, 48.0));
+                ui.vertical(|ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(&deal.name).font(ui::semibold(13.0)));
+                        ui::pill(ui, &format!("-{:.0}%", deal.discount), GREEN);
+                        if !deal.staff_valued {
+                            ui.label(RichText::new("RAP-based").size(10.5).color(MUTED))
+                                .on_hover_text("No staff value, so this compares against RAP.");
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new(format!("{} R$", ui::money(deal.price as i64)))
+                                .font(ui::semibold(12.5))
+                                .color(GOLD),
+                        );
+                        ui.label(
+                            RichText::new(format!("value {}", ui::money(deal.value as i64)))
+                                .size(11.5)
+                                .color(MUTED),
+                        );
+                        match live {
+                            Some(Load::Ready(Some(price))) if price == deal.price => {
+                                ui.label(RichText::new("· still listed").size(11.0).color(GREEN));
+                            }
+                            Some(Load::Ready(Some(price))) => {
+                                let still = price < deal.value;
+                                ui.label(
+                                    RichText::new(format!("· now {} R$", ui::money(price as i64)))
+                                        .size(11.0)
+                                        .color(if still { GREEN } else { ui::DANGER }),
+                                );
+                            }
+                            Some(Load::Ready(None)) => {
+                                ui.label(RichText::new("· sold out").size(11.0).color(ui::DANGER));
+                            }
+                            Some(Load::Busy) => {
+                                ui.label(RichText::new("· checking…").size(11.0).color(MUTED));
+                            }
+                            _ => {}
+                        }
+                    });
+                    ui::analyze::value_line(ui, &app.values, deal.asset_id);
+                });
+            });
+        });
+        if card.on_hover_text("Open details").clicked() {
+            open = Some((deal.asset_id, deal.name.clone()));
+        }
+    }
+    if let Some((asset, name)) = open {
+        app.open_item(asset, &name);
+        app.catalog.deals_mode = true;
     }
 }

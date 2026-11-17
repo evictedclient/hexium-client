@@ -91,14 +91,26 @@ pub fn sparkline(ui: &mut Ui, state: &Load<ResaleData>) {
         })
         .collect();
     let rising = points[points.len() - 1].price >= points[0].price;
-    ui.painter()
-        .add(egui::Shape::line(line, Stroke::new(1.5, if rising { GREEN } else { ui::DANGER })));
-    response.on_hover_text(format!(
-        "Average sale price, {} days with sales\nfrom {} to {} R$",
-        points.len(),
-        ui::money(points[0].price as i64),
-        ui::money(points[points.len() - 1].price as i64)
-    ));
+    let color = if rising { GREEN } else { ui::DANGER };
+    ui.painter().add(egui::Shape::line(line.clone(), Stroke::new(1.5, color)));
+    if let Some(pointer) = response.hover_pos() {
+        // The nearest day with sales.
+        let index = line
+            .iter()
+            .enumerate()
+            .min_by(|(_, a), (_, b)| (a.x - pointer.x).abs().total_cmp(&(b.x - pointer.x).abs()))
+            .map(|(index, _)| index)
+            .unwrap_or(0);
+        let point = points[index];
+        ui.painter().circle_filled(line[index], 2.5, color);
+        let sold = if point.volume == 1 { "1 sale".to_string() } else { format!("{} sales", point.volume) };
+        crate::ui::chart::hover_box(
+            ui.ctx(),
+            pointer,
+            &crate::ui::chart::short_date(point.day),
+            &[(format!("Average {} R$", ui::money(point.price as i64)), color), (sold, MUTED)],
+        );
+    }
 }
 
 /// Totals of one side of a trade.

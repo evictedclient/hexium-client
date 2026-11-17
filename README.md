@@ -56,8 +56,13 @@ Not affiliated with hexium.wtf or Roblox.
   a verdict for the whole trade by value and by RAP, with a warning for low-demand items.
 - **Watchlist**: watch a limited at a target price and get a notification when its cheapest
   reseller reaches it (checked every 2 minutes). It only alerts; it never buys.
-- **Value over time**: your collectibles' total RAP and value, recorded daily and charted
-  on the Inventory screen.
+- **Value over time**: your value and RAP history from Heximons (every few minutes since
+  it started tracking you), charted on the Inventory screen; the client's own daily record
+  is the fallback.
+- **Deals**: a Catalog view of limiteds whose cheapest listing is well below their value,
+  biggest discount first, with the top rows checked against hexium.wtf's live prices.
+- **Heximons on profiles**: value, RAP, rank and a value history chart for any player
+  Heximons tracks, and a "View on Heximons" link on limiteds.
 - **Trade results**: a notification when a trade you sent is accepted, declined, countered
   or expires.
 - **Make it yours**: pick an accent colour and background in Settings.

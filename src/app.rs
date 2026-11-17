@@ -157,6 +157,10 @@ pub enum Msg {
     WatchPrice(u64, Option<u64>),
     /// A watchlist alert was clicked: open that item.
     OpenItem(u64, String),
+    /// A deal's live cheapest price from hexium.wtf.
+    DealLive(u64, Res<Option<u64>>),
+    /// A player's Heximons stats.
+    PlayerStats(u64, Res<Option<crate::values::PlayerStats>>),
     /// The watcher saw a counter move: refresh the badges.
     ActivityChanged,
 }
@@ -668,6 +672,13 @@ pub struct CatalogState {
     pub resellers_more: bool,
     /// The watchlist target being typed in the details panel.
     pub watch_input: String,
+    /// Showing Deals instead of browsing.
+    pub deals_mode: bool,
+    /// Hide deals smaller than this many percent (0 means the default, 20).
+    pub deal_min: f32,
+    pub deal_staff_only: bool,
+    /// Live cheapest reseller for listed deals (`None`: nobody selling now).
+    pub deal_live: HashMap<u64, Load<Option<u64>>>,
 }
 
 #[derive(Default)]
@@ -849,6 +860,9 @@ pub struct App {
     pub history_cache: HashMap<u64, Load<models::ResaleData>>,
     /// Daily totals of your collectibles.
     pub value_history: Vec<crate::values::HistoryPoint>,
+    /// Heximons player stats (value history, rank) by user id; `None` inside
+    /// when Heximons does not track that player.
+    pub player_stats: HashMap<u64, Load<Option<crate::values::PlayerStats>>>,
     notify_gate: crate::notify::SharedGate,
     /// The native window handle, for raising the window from a toast click.
     hwnd: Arc<AtomicIsize>,
@@ -918,6 +932,7 @@ impl App {
             values_error: None,
             history_cache: HashMap::new(),
             value_history: crate::values::load_history(),
+            player_stats: HashMap::new(),
             notify_gate: Default::default(),
             start_minimized,
             autostart: crate::autostart::state(),
@@ -1726,6 +1741,32 @@ impl App {
         });
         self.catalog.detail = Load::Idle;
         self.load_catalog_detail(asset_id);
+    }
+
+    /// A player's Heximons stats, fetched once per session (or on `refresh`).
+    pub fn player_stats(&mut self, user_id: u64, refresh: bool) -> Load<Option<crate::values::PlayerStats>> {
+        if !refresh {
+            if let Some(state) = self.player_stats.get(&user_id) {
+                return state.clone();
+            }
+        }
+        self.player_stats.insert(user_id, Load::Busy);
+        let cx = self.cx();
+        cx.spawn(async move { Msg::PlayerStats(user_id, crate::values::fetch_player(user_id).await) });
+        Load::Busy
+    }
+
+    /// Checks a deal's price on hexium.wtf itself (Heximons' may be minutes old).
+    pub fn check_deal(&mut self, asset: u64) {
+        if self.catalog.deal_live.contains_key(&asset) {
+            return;
+        }
+        self.catalog.deal_live.insert(asset, Load::Busy);
+        let cx = self.cx();
+        let api = cx.api.clone();
+        cx.spawn(async move {
+            Msg::DealLive(asset, endpoints::cheapest_resale(&api, asset).await.map_err(|error| error.to_string()))
+        });
     }
 
     /// Refreshes Heximons values when the cached ones are old.
@@ -3149,6 +3190,8 @@ impl App {
                     Ok(values) => {
                         crate::values::save_cache(&values);
                         self.values = values;
+                        // New best prices: check the deals again.
+                        self.catalog.deal_live.clear();
                         self.values_error = None;
                         self.record_value_history();
                     }
@@ -3166,6 +3209,12 @@ impl App {
                 if self.watched(asset).is_some() {
                     self.watch_prices.insert(asset, price);
                 }
+            }
+            Msg::DealLive(asset, result) => {
+                self.catalog.deal_live.insert(asset, into_load(result));
+            }
+            Msg::PlayerStats(user_id, result) => {
+                self.player_stats.insert(user_id, into_load(result));
             }
             Msg::OpenItem(asset, name) => {
                 self.egui.send_viewport_cmd(egui::ViewportCommand::Minimized(false));

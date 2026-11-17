@@ -32,7 +32,25 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
                 }
             });
 
-            if !app.value_history.is_empty() {
+            // Your history from Heximons (every few minutes since it started
+            // tracking you); the client's own daily record when it has none.
+            let me = app.session.ready().map(|session| session.user.id);
+            let tracked = match me.map(|id| app.player_stats(id, false)) {
+                Some(Load::Ready(Some(stats))) if stats.points.len() > 1 => Some(stats),
+                _ => None,
+            };
+            if let Some(stats) = tracked {
+                h2(ui, "Value over time");
+                let since = stats.points.first().map(|point| ui::chart::short_date((point.time / 86_400) as i64));
+                muted(
+                    ui,
+                    &format!(
+                        "From Heximons, since {} · gold is value, the accent line is RAP. Hover for any point.",
+                        since.unwrap_or_default()
+                    ),
+                );
+                ui::chart::player_history(ui, &stats.points, 170.0);
+            } else if !app.value_history.is_empty() {
                 h2(ui, "Value over time");
                 muted(
                     ui,

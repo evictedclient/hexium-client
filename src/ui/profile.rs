@@ -159,6 +159,8 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
                 });
             });
 
+            heximons_card(app, cx, ui, user.id);
+
             if !bundle.badges.is_empty() {
                 h2(ui, "Badges");
                 ui::wrap(ui, |ui| {
@@ -269,5 +271,43 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
             h1(ui, "Profile");
             waiting(ui, "profile, badges, groups and games");
         }
+    }
+}
+
+/// What Heximons knows about this player: value, RAP, rank and how their
+/// collection's worth has moved.
+fn heximons_card(app: &mut App, cx: &Ctx, ui: &mut Ui, user_id: u64) {
+    h2(ui, "Heximons");
+    let mut refresh = false;
+    match app.player_stats(user_id, false) {
+        Load::Ready(Some(stats)) => {
+            if let Some(latest) = stats.latest() {
+                ui::wrap(ui, |ui| {
+                    ui::stat(ui, "VALUE", &ui::money(latest.value as i64), ui::GOLD);
+                    ui::stat(ui, "RAP", &ui::money(latest.rap as i64), ui::GOLD);
+                    if let Some(rank) = stats.rank {
+                        ui::stat(ui, "RANK", &format!("#{}", ui::money(rank as i64)), accent());
+                    }
+                    ui::stat(ui, "COLLECTIBLES", &ui::money(latest.collectibles as i64), accent());
+                });
+            }
+            ui::chart::player_history(ui, &stats.points, 150.0);
+            ui.horizontal(|ui| {
+                muted(ui, "Gold is value, the accent line is RAP.");
+                if ui.link(RichText::new("View on Heximons").size(12.0)).clicked() {
+                    cx.open(&crate::values::player_url(user_id));
+                }
+                refresh = ui.small_button("Refresh").clicked();
+            });
+        }
+        Load::Ready(None) => muted(ui, "Heximons does not track this player yet."),
+        Load::Err(error) => {
+            failed(ui, &format!("Could not reach Heximons: {error}"));
+            refresh = ui.small_button("Retry").clicked();
+        }
+        _ => waiting(ui, "Heximons stats"),
+    }
+    if refresh {
+        app.player_stats(user_id, true);
     }
 }
