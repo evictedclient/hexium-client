@@ -101,6 +101,35 @@ pub fn show(app: &mut App, _cx: &Ctx, ui: &mut Ui) {
         });
     });
 
+    h2(ui, "Mass send");
+    ui::tile(ui, 620.0, |ui| {
+        let mut changed = false;
+        ui.horizontal(|ui| {
+            ui.label("Send to at most");
+            let (low, high) = (*crate::app::MASS_CAP_RANGE.start(), *crate::app::MASS_CAP_RANGE.end());
+            changed |= ui.add(egui::Slider::new(&mut app.cfg.mass_cap, low..=high).suffix(" people")).changed();
+        });
+        ui.horizontal(|ui| {
+            ui.label("Wait between trades");
+            let (low, high) = (*crate::app::MASS_GAP_RANGE.start(), *crate::app::MASS_GAP_RANGE.end());
+            changed |= ui
+                .add(egui::Slider::new(&mut app.cfg.mass_gap_secs, low..=high).suffix(" s").logarithmic(true))
+                .changed();
+        });
+        if ui.small_button("Back to 10 people, 30 s").clicked() {
+            app.cfg.mass_cap = 10;
+            app.cfg.mass_gap_secs = 30;
+            changed = true;
+        }
+        if changed {
+            app.cfg.save();
+        }
+        muted(
+            ui,
+            "Used by Trade helpers. The wait has a 10-second floor: bursts of identical trades are what get accounts rate-limited or flagged.",
+        );
+    });
+
     h2(ui, "Display");
     ui::tile(ui, 620.0, |ui| {
         ui.horizontal(|ui| {

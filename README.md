@@ -73,10 +73,11 @@ Not affiliated with hexium.wtf or Roblox.
 - **Charts**: 1D / 1W / 1M / All ranges with the change over the range.
 - **Profit and loss**: what you paid for each collectible (from your purchases) against
   its value now, and a total.
-- **Trade helpers** (Trades → Trade helpers): pick what you want, build an offer by hand or
+- **Trade helpers** (its own screen in the side menu, under Social): pick what you want, build an offer by hand or
   with Suggest (closest value match), see everyone who owns it, open a trade with one of
-  them, or mass-send the offer (after one confirmation listing them; at most 10, one every
-  30 seconds, skipping anyone you already trade with, with Stop).
+  them, or mass-send the offer (after one confirmation listing them, skipping anyone you already
+  trade with, with Stop). How many people (1–50, default 10) and the wait between trades
+  (10–600 s, default 30) are set in Settings > Mass send.
 - **Your own values**: set a value on any limited; it replaces Heximons' (or adds one)
   everywhere values are used, and is labelled "Your value".
 - **Trade stats** over your last 40 completed trades, and an Owners list on every limited.

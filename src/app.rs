@@ -30,12 +30,13 @@ pub enum View {
     Messages,
     Chat,
     Market,
+    Helpers,
     Trades,
     Settings,
 }
 
 impl View {
-    pub const ALL: [View; 14] = [
+    pub const ALL: [View; 15] = [
         View::Home,
         View::Games,
         View::Catalog,
@@ -48,6 +49,7 @@ impl View {
         View::Messages,
         View::Chat,
         View::Market,
+        View::Helpers,
         View::Trades,
         View::Settings,
     ];
@@ -66,6 +68,7 @@ impl View {
             View::Messages => "Messages",
             View::Chat => "Chat",
             View::Market => "Market",
+            View::Helpers => "Trade helpers",
             View::Trades => "Trades",
             View::Settings => "Settings",
         }
@@ -595,9 +598,10 @@ fn chat_summary(recipient: &str, starts: bool, text: &str) -> String {
 fn mass_summary(plan: &MassPlan) -> String {
     let names: Vec<&str> = plan.assets.iter().map(|(_, name)| name.as_str()).collect();
     let mut out = format!(
-        "Send the same trade to {} owners of {}, one every {MASS_GAP_SECS} seconds.\n\n",
+        "Send the same trade to {} owners of {}, one every {} seconds.\n\n",
         plan.recipients.len(),
-        names.join(" + ")
+        names.join(" + "),
+        plan.gap_secs
     );
     out.push_str(&format!("You give each of them (RAP {})\n", group_digits(plan.give.rap)));
     for (name, rap, serial) in &plan.give.items {
@@ -612,7 +616,7 @@ fn mass_summary(plan: &MassPlan) -> String {
         out.push_str(&format!("   · {name} ({} item(s))\n", copies.len()));
     }
     if plan.skipped > 0 {
-        out.push_str(&format!("\n{} other owner(s) left out (already trading with you, or past the cap of {MASS_CAP}).\n", plan.skipped));
+        out.push_str(&format!("\n{} other owner(s) left out (already trading with you, or past your limit of {}).\n", plan.skipped, plan.cap));
     }
     out.push_str("\nIf more than one accepts, only the first gets your items; the others fail. You can stop at any time.");
     out
@@ -810,8 +814,6 @@ pub struct TradesState {
     /// Showing the statistics instead of a list.
     pub show_stats: bool,
     pub stats: Load<TradeStats>,
-    /// Showing the trade helpers instead of a list.
-    pub show_helpers: bool,
     pub helper: TradeHelper,
 }
 
@@ -872,6 +874,9 @@ pub struct MassPlan {
     pub recipients: Vec<(u64, String, Vec<u64>)>,
     /// Owners left out (already in a trade with you, or past the cap).
     pub skipped: usize,
+    /// The cap and pacing this send was planned with.
+    pub cap: usize,
+    pub gap_secs: u64,
 }
 
 /// Progress of a mass send under way.
@@ -882,11 +887,13 @@ pub struct MassStatus {
     pub last_error: Option<String>,
     pub running: bool,
     pub stop: Arc<std::sync::atomic::AtomicBool>,
+    pub gap_secs: u64,
 }
 
-/// Most owners a mass send goes to, and the pause between trades.
-pub const MASS_CAP: usize = 10;
-pub const MASS_GAP_SECS: u64 = 30;
+/// Bounds for the mass send settings: people per send, and seconds between
+/// trades (a floor, because bursts of trades are what get accounts flagged).
+pub const MASS_CAP_RANGE: std::ops::RangeInclusive<usize> = 1..=50;
+pub const MASS_GAP_RANGE: std::ops::RangeInclusive<u64> = 10..=600;
 
 /// The Market screen: Heximons' value changes, sales, trade ads and leaderboard.
 #[derive(Default)]
@@ -2099,10 +2106,11 @@ impl App {
             return;
         }
         let free: Vec<&Candidate> = owners.iter().filter(|owner| !owner.busy).collect();
-        let skipped = owners.len() - free.len().min(MASS_CAP);
+        let cap = self.mass_cap();
+        let skipped = owners.len() - free.len().min(cap);
         let recipients: Vec<(u64, String, Vec<u64>)> = free
             .iter()
-            .take(MASS_CAP)
+            .take(cap)
             .map(|owner| (owner.user_id, owner.name.clone(), owner.copies.clone()))
             .collect();
         if recipients.is_empty() {
@@ -2116,6 +2124,8 @@ impl App {
             assets: self.trades.helper.wanted.clone(),
             recipients,
             skipped,
+            cap,
+            gap_secs: self.mass_gap(),
         };
         self.ask(WriteAction::MassSend { plan });
     }
@@ -2139,6 +2149,16 @@ impl App {
             .map(|item| (item.user_asset_id, self.values.value_or(item.id, item.rap)))
             .collect();
         self.trades.helper.give = crate::ui::analyze::suggest(&candidates, target.saturating_sub(robux), TRADE_SIDE_LIMIT);
+    }
+
+    /// People per mass send, from Settings (kept within its bounds).
+    pub fn mass_cap(&self) -> usize {
+        self.cfg.mass_cap.clamp(*MASS_CAP_RANGE.start(), *MASS_CAP_RANGE.end())
+    }
+
+    /// Seconds between mass-send trades, from Settings (kept within its bounds).
+    pub fn mass_gap(&self) -> u64 {
+        self.cfg.mass_gap_secs.clamp(*MASS_GAP_RANGE.start(), *MASS_GAP_RANGE.end())
     }
 
     pub fn stop_mass_send(&mut self) {
@@ -2755,6 +2775,7 @@ impl App {
                 last_error: None,
                 running: true,
                 stop: stop.clone(),
+                gap_secs: plan.gap_secs,
             });
             let (tx, egui, api) = (self.tx.clone(), self.egui.clone(), self.api.clone());
             self.rt.spawn(async move {
@@ -2782,7 +2803,7 @@ impl App {
                     if done {
                         break;
                     }
-                    for _ in 0..MASS_GAP_SECS {
+                    for _ in 0..plan.gap_secs {
                         if stop.load(Ordering::Relaxed) {
                             break;
                         }
@@ -3126,7 +3147,7 @@ impl App {
             }
             WriteAction::MassSend { plan } => {
                 self.trade_builder = None;
-                format!("Sending to {} owners, one every {MASS_GAP_SECS} seconds. Progress is shown at the top.", plan.recipients.len())
+                format!("Sending to {} owners, one every {} seconds. Progress is shown at the top.", plan.recipients.len(), plan.gap_secs)
             }
         };
         self.notice = Some((true, message));
@@ -3349,6 +3370,10 @@ impl App {
             View::Inventory => self.inventory.data = Load::Idle,
             View::Money => self.money.data = Load::Idle,
             View::Messages => self.messages.data = Load::Idle,
+            View::Helpers => {
+                self.inventory.data = Load::Idle;
+                self.trades.helper.owners = Load::Idle;
+            }
             View::Market => {
                 self.market.changes = Load::Idle;
                 self.market.sales = Load::Idle;
@@ -3397,6 +3422,7 @@ impl App {
             View::Messages => self.load_messages(),
             View::Chat => self.load_chat(),
             View::Market => self.load_market(),
+            View::Helpers => self.load_inventory(),
             View::Trades => self.load_trades(),
             View::Settings => {}
         }

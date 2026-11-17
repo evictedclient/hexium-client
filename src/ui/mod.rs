@@ -859,6 +859,7 @@ pub fn chrome(app: &mut App, cx: &Ctx, ctx: &egui::Context) {
                                 View::Messages => messages::show(app, cx, ui),
                                 View::Chat => chat::show(app, cx, ui),
                                 View::Market => market::show(app, cx, ui),
+                                View::Helpers => helpers::screen(app, cx, ui),
                                 View::Trades => trades::show(app, cx, ui),
                                 View::Settings => settings::show(app, cx, ui),
                             }
@@ -935,7 +936,7 @@ pub const NAV_GROUPS: [(&str, &[View]); 5] = [
     ("", &[View::Home]),
     ("You", &[View::Profile, View::Avatar, View::Inventory, View::Money]),
     ("Play", &[View::Games, View::Catalog, View::Market]),
-    ("Social", &[View::Friends, View::Chat, View::Messages, View::Trades, View::Groups]),
+    ("Social", &[View::Friends, View::Chat, View::Messages, View::Trades, View::Helpers, View::Groups]),
     ("App", &[View::Settings]),
 ];
 
@@ -1354,6 +1355,7 @@ pub fn follow_action(user_id: u64, name: &str, follow: bool) -> WriteAction {
 fn mass_strip(app: &mut App, ui: &mut Ui) {
     let Some(mass) = &app.mass else { return };
     let (running, sent, failed, total, error) = (mass.running, mass.sent, mass.failed, mass.total, mass.last_error.clone());
+    let every = format!(" · one every {} s", mass.gap_secs);
     let mut stop = false;
     let mut dismiss = false;
     card_frame().show(ui, |ui| {
@@ -1366,7 +1368,7 @@ fn mass_strip(app: &mut App, ui: &mut Ui) {
                 RichText::new(format!(
                     "Mass send: {sent} of {total} sent{}{}",
                     if failed > 0 { format!(" · {failed} failed") } else { String::new() },
-                    if running { " · one every 30 s" } else { " · finished" }
+                    if running { every.as_str() } else { " · finished" }
                 ))
                 .font(semibold(13.0)),
             );

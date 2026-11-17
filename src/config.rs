@@ -52,6 +52,12 @@ pub struct Config {
     /// Your own item values: they replace Heximons' or add missing ones.
     #[serde(default)]
     pub value_overrides: Vec<ValueOverride>,
+    /// Most owners one mass send goes to (1 to 50).
+    #[serde(default = "default_mass_cap")]
+    pub mass_cap: usize,
+    /// Seconds between trades in a mass send (10 to 600).
+    #[serde(default = "default_mass_gap")]
+    pub mass_gap_secs: u64,
     /// Text size (1.0 = normal).
     #[serde(default = "default_scale")]
     pub ui_scale: f32,
@@ -68,6 +74,14 @@ pub struct Config {
 
 fn default_deal_alert_min() -> f32 {
     30.0
+}
+
+fn default_mass_cap() -> usize {
+    10
+}
+
+fn default_mass_gap() -> u64 {
+    30
 }
 
 fn default_scale() -> f32 {
@@ -119,6 +133,8 @@ impl Default for Config {
             deal_alert_high_demand: false,
             seen_deals: Vec::new(),
             ui_scale: default_scale(),
+            mass_cap: default_mass_cap(),
+            mass_gap_secs: default_mass_gap(),
             value_overrides: Vec::new(),
             compact: false,
             shortcut_exe: None,

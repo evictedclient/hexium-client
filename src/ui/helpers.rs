@@ -4,8 +4,19 @@
 
 use eframe::egui::{self, RichText, Ui};
 
-use crate::app::{App, Load, MASS_CAP, MASS_GAP_SECS, TRADE_SIDE_LIMIT};
+use crate::app::{App, Load, TRADE_SIDE_LIMIT};
 use crate::ui::{self, accent, failed, muted, waiting, Ctx, GOLD, GREEN, MUTED};
+
+/// The Trade helpers screen in the side menu.
+pub fn screen(app: &mut App, cx: &Ctx, ui: &mut Ui) {
+    ui::h1(ui, "Trade helpers");
+    muted(
+        ui,
+        "Say what you want, build an offer (or let Suggest match it by value), then trade one owner or mass-send to several.",
+    );
+    ui.add_space(8.0);
+    show(app, cx, ui);
+}
 
 pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
     app.load_inventory();
@@ -193,15 +204,16 @@ fn owners(app: &mut App, ui: &mut Ui) {
     let wanted: Vec<u64> = app.trades.helper.wanted.iter().map(|(asset, _)| *asset).collect();
     let stale = app.trades.helper.owners_for != wanted;
     let running = app.mass.as_ref().is_some_and(|mass| mass.running);
+    let (cap, gap) = (app.mass_cap(), app.mass_gap());
     ui.horizontal(|ui| {
         if ui.add_enabled(!wanted.is_empty(), egui::Button::new("Find owners")).clicked() {
             app.helper_find_owners();
         }
         let ready = matches!(app.trades.helper.owners, Load::Ready(_)) && !stale && !app.trades.helper.give.is_empty() && !running;
         if ui
-            .add_enabled(ready, egui::Button::new(format!("Mass send to up to {MASS_CAP}…")))
+            .add_enabled(ready, egui::Button::new(format!("Mass send to up to {cap}…")))
             .on_hover_text(format!(
-                "Sends your offer to the owners below who are not already trading with you: at most {MASS_CAP}, one every {MASS_GAP_SECS} seconds, after you confirm the list."
+                "Sends your offer to the owners below who are not already trading with you: at most {cap}, one every {gap} seconds, after you confirm the list. Change both in Settings."
             ))
             .clicked()
         {
