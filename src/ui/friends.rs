@@ -98,7 +98,9 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
                         ui.horizontal(|ui| {
                             app.thumbs.show(ui, cx, icon.as_deref(), egui::vec2(46.0, 46.0));
                             ui.vertical(|ui| {
-                                ui.label(RichText::new(&friend.display_name).size(12.5).strong());
+                                if ui.link(RichText::new(&friend.display_name).size(12.5).strong()).clicked() {
+                                    app.open_profile(id);
+                                }
                                 muted(ui, &format!("@{}", friend.name));
                                 ui.horizontal(|ui| {
                                     ui::presence_dot(ui, friend.is_online);

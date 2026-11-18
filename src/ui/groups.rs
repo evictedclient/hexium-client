@@ -114,7 +114,13 @@ pub fn dock(app: &mut App, cx: &Ctx, ctx: &egui::Context) {
                             let icon = detail.wall_icons.get(&post.poster_id).cloned();
                             app.thumbs.show(ui, cx, icon.as_deref(), egui::vec2(24.0, 24.0));
                             ui.vertical(|ui| {
-                                ui.label(RichText::new(&post.poster).font(ui::semibold(11.5)));
+                                if post.poster_id != 0 {
+                                    if ui.link(RichText::new(&post.poster).font(ui::semibold(11.5))).clicked() {
+                                        app.open_profile(post.poster_id);
+                                    }
+                                } else {
+                                    ui.label(RichText::new(&post.poster).font(ui::semibold(11.5)));
+                                }
                                 ui.label(RichText::new(&post.body).size(11.5));
                             });
                         });

@@ -353,7 +353,9 @@ fn thread(
                             });
                             last_day = day;
                         }
-                        bubble(ui, message, me, width, &names);
+                        if let Some(id) = bubble(ui, message, me, width, &names) {
+                            open_profile = Some(id);
+                        }
                     }
                     // Scroll to the newest once per arrival.
                     let seen_key = egui::Id::new(("chat-seen", conversation_id));
@@ -423,7 +425,9 @@ fn thread(
 }
 
 /// One message: yours on the right in the accent colour, theirs on the left.
-fn bubble(ui: &mut Ui, message: &ChatMessage, me: u64, width: f32, names: &std::collections::HashMap<u64, String>) {
+/// Draws one message; returns the sender's id when their name is clicked.
+fn bubble(ui: &mut Ui, message: &ChatMessage, me: u64, width: f32, names: &std::collections::HashMap<u64, String>) -> Option<u64> {
+    let mut clicked = None;
     let mine = message.sender_id == me;
     let max = (width * 0.7).max(160.0);
     let layout = if mine {
@@ -446,7 +450,9 @@ fn bubble(ui: &mut Ui, message: &ChatMessage, me: u64, width: f32, names: &std::
                     ui.set_max_width(max);
                     if !mine && names.len() > 1 {
                         if let Some(name) = names.get(&message.sender_id) {
-                            ui.label(RichText::new(name).font(ui::semibold(10.5)).color(accent()));
+                            if ui.link(RichText::new(name).font(ui::semibold(10.5)).color(accent())).clicked() {
+                                clicked = Some(message.sender_id);
+                            }
                         }
                     }
                     ui.add(egui::Label::new(RichText::new(&message.content).size(13.0).color(INK)).wrap());
@@ -458,6 +464,7 @@ fn bubble(ui: &mut Ui, message: &ChatMessage, me: u64, width: f32, names: &std::
         });
     });
     ui.add_space(2.0);
+    clicked
 }
 
 /// Names of everyone in a conversation, by id.

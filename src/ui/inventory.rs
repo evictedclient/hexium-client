@@ -202,11 +202,18 @@ pub fn resale_window(app: &mut App, cx: &Ctx, ctx: &egui::Context) {
 
     let mut open = true;
     let mut ask: Option<WriteAction> = None;
+    let mut open_item = false;
     ui::dock(ctx, "sell", 460.0, egui::Id::new(("resale", user_asset_id)), format!("Sell · {name}"), &mut open, |ui| {
             ui.horizontal_top(|ui| {
                 app.thumbs.show(ui, cx, icon.as_deref(), egui::vec2(96.0, 96.0));
                 ui.vertical(|ui| {
-                    ui.label(RichText::new(&name).font(ui::display(20.0)));
+                    if ui
+                        .link(RichText::new(&name).font(ui::display(20.0)))
+                        .on_hover_text("Open the item's details")
+                        .clicked()
+                    {
+                        open_item = true;
+                    }
                     if let Some(serial) = serial {
                         ui::pill(ui, &format!("Serial #{serial}"), GOLD);
                     }
@@ -308,6 +315,9 @@ pub fn resale_window(app: &mut App, cx: &Ctx, ctx: &egui::Context) {
         if resale.user_asset_id == user_asset_id {
             resale.price_input = price_input;
         }
+    }
+    if open_item {
+        app.open_item(asset_id, &name);
     }
     if let Some(action) = ask {
         app.ask(action);

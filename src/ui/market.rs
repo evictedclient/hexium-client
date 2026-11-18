@@ -212,6 +212,7 @@ fn ads(app: &mut App, _cx: &Ctx, ui: &mut Ui) {
         return;
     }
     let mut trade: Option<crate::values::TradeAd> = None;
+    let mut open_item: Option<(u64, String)> = None;
     let mut profile: Option<u64> = None;
     let width = (ui.available_width() - 4.0).max(320.0);
     for ad in shown {
@@ -231,7 +232,7 @@ fn ads(app: &mut App, _cx: &Ctx, ui: &mut Ui) {
                     }
                 });
             });
-            let side = |ui: &mut Ui, label: &str, assets: &[u64], robux: u64| {
+            let mut side = |ui: &mut Ui, label: &str, assets: &[u64], robux: u64| {
                 ui.horizontal_wrapped(|ui| {
                     ui.label(RichText::new(label).size(11.5).color(MUTED));
                     if assets.is_empty() && robux == 0 {
@@ -243,7 +244,9 @@ fn ads(app: &mut App, _cx: &Ctx, ui: &mut Ui) {
                         total += item.map(|item| item.value).unwrap_or(0);
                         let name = item.map(|item| item.name.clone()).unwrap_or_else(|| format!("Item {asset}"));
                         let color = if mine.contains(asset) { accent() } else { ui::INK };
-                        ui.label(RichText::new(name).size(12.0).color(color));
+                        if ui.link(RichText::new(&name).size(12.0).color(color)).clicked() {
+                            open_item = Some((*asset, name.clone()));
+                        }
                     }
                     if robux > 0 {
                         ui.label(RichText::new(format!("+ {} R$", ui::money(robux as i64))).size(12.0).color(GOLD));
@@ -262,6 +265,9 @@ fn ads(app: &mut App, _cx: &Ctx, ui: &mut Ui) {
     }
     if let Some(ad) = trade {
         app.trade_from_ad(&ad);
+    }
+    if let Some((asset, name)) = open_item {
+        app.open_item(asset, &name);
     }
 }
 

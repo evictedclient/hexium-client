@@ -69,6 +69,7 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
             // spans the screen instead of hugging the left edge.
             let item_width = (ui.available_width() - 520.0).max(220.0);
             let mut open_profile: Option<u64> = None;
+            let mut open_item: Option<(u64, String)> = None;
             egui::Grid::new("transactions")
                 .striped(true)
                 .num_columns(5)
@@ -95,12 +96,7 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
                             ui.set_min_width(item_width);
                         if row.item_id != 0 && row.item_kind == "Asset" {
                             if ui.link(RichText::new(name).size(12.0)).clicked() {
-                                cx.open(&format!(
-                                    "{}/catalog/{}/{}",
-                                    cx.api.origin(),
-                                    row.item_id,
-                                    crate::api::models::slug(&row.item_name)
-                                ));
+                                open_item = Some((row.item_id, row.item_name.clone()));
                             }
                         } else {
                             ui.label(RichText::new(name).size(12.0));
@@ -156,6 +152,9 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
                 failed(ui, error);
             }
 
+            if let Some((asset, name)) = open_item.take() {
+                app.open_item(asset, &name);
+            }
             if let Some(id) = open_profile {
                 app.open_profile(id);
             }

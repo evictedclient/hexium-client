@@ -181,6 +181,7 @@ fn detail_body(
     ui.add_space(6.0);
 
     // Your side first. The API's own order is not reliable, so match on user id.
+    let mut open_item: Option<(u64, String)> = None;
     let mut sides: Vec<&TradeOffer> = detail.offers.iter().collect();
     if let Some(me) = me {
         sides.sort_by_key(|offer| offer.user_id != me);
@@ -228,7 +229,9 @@ fn detail_body(
                 column.horizontal(|ui| {
                     app.thumbs.show(ui, cx, icon.as_deref(), egui::vec2(44.0, 44.0));
                     ui.vertical(|ui| {
-                        ui.label(RichText::new(&asset.name).size(12.0).strong());
+                        if ui.link(RichText::new(&asset.name).size(12.0).strong()).clicked() {
+                            open_item = Some((asset.asset_id, asset.name.clone()));
+                        }
                         ui.horizontal(|ui| {
                             ui.label(
                                 RichText::new(format!("RAP {}", ui::money(asset.rap as i64)))
@@ -272,6 +275,10 @@ fn detail_body(
             }
         }
     });
+    if let Some((asset, name)) = open_item.take() {
+        app.open_item(asset, &name);
+    }
+
     // The analyzer's verdict, for you.
     if let Some(me) = me {
         let mine = detail.offers.iter().find(|offer| offer.user_id == me);
@@ -372,6 +379,7 @@ pub fn side_value(values: &crate::values::Values, offer: &TradeOffer) -> u64 {
 fn stats(app: &mut App, ui: &mut Ui) {
     app.load_trade_stats();
     let mut open_profile_name: Option<String> = None;
+    let mut open_profile_id: Option<u64> = None;
     match app.trades.stats.clone() {
         Load::Ready(stats) => {
             if stats.rows.is_empty() {
@@ -414,7 +422,11 @@ fn stats(app: &mut App, ui: &mut Ui) {
                 ui.end_row();
                 for row in &stats.rows {
                     ui.label(RichText::new(stamp(&row.created)).size(11.5).color(MUTED));
-                    ui.label(&row.partner);
+                    if row.partner_id != 0 && ui.link(&row.partner).clicked() {
+                        open_profile_id = Some(row.partner_id);
+                    } else if row.partner_id == 0 {
+                        ui.label(&row.partner);
+                    }
                     ui.label(RichText::new(signed(row.gain_value)).color(color(row.gain_value)));
                     ui.label(RichText::new(signed(row.gain_rap)).size(11.5).color(color(row.gain_rap)));
                     ui.end_row();
@@ -426,6 +438,9 @@ fn stats(app: &mut App, ui: &mut Ui) {
         }
         Load::Err(error) => failed(ui, &format!("Could not work out the stats: {error}")),
         _ => waiting(ui, "your completed trades (this reads each one)"),
+    }
+    if let Some(id) = open_profile_id {
+        app.open_profile(id);
     }
     if let Some(name) = open_profile_name {
         // Partners are listed by name; their id is in the trade list rows.

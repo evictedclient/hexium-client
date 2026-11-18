@@ -872,6 +872,7 @@ pub struct Candidate {
 #[derive(Debug, Clone, Default)]
 pub struct StatRow {
     pub id: u64,
+    pub partner_id: u64,
     pub partner: String,
     pub created: String,
     /// What you got minus what you gave (Robux included).
@@ -2060,14 +2061,14 @@ impl App {
         let cx = self.cx();
         let api = cx.api.clone();
         cx.spawn(async move {
-            let mut ids: Vec<(u64, String, String)> = Vec::new();
+            let mut ids: Vec<(u64, u64, String, String)> = Vec::new();
             let mut cursor: Option<String> = None;
             for _ in 0..3 {
                 let page = match endpoints::trades(&api, "completed", cursor.as_deref()).await {
                     Ok(page) => page,
                     Err(error) => return Msg::TradeStats(Err(error.to_string())),
                 };
-                ids.extend(page.items.iter().map(|trade| (trade.id, trade.partner_name.clone(), trade.created.clone())));
+                ids.extend(page.items.iter().map(|trade| (trade.id, trade.partner_id, trade.partner_name.clone(), trade.created.clone())));
                 match page.next {
                     Some(next) if ids.len() < 40 => cursor = Some(next),
                     _ => break,
@@ -2076,7 +2077,7 @@ impl App {
             ids.truncate(40);
             let mut stats = TradeStats::default();
             let mut partners: HashMap<String, usize> = HashMap::new();
-            for (id, partner, created) in ids {
+            for (id, partner_id, partner, created) in ids {
                 let Ok(detail) = endpoints::trade_offers(&api, id).await else { continue };
                 let worth = |offer: &models::TradeOffer| -> (i64, i64) {
                     let robux = offer.robux.unwrap_or(0) as i64;
@@ -2091,6 +2092,7 @@ impl App {
                     *partners.entry(partner.clone()).or_default() += 1;
                     stats.rows.push(StatRow {
                         id,
+                        partner_id,
                         partner,
                         created,
                         gain_value: get_value - give_value,

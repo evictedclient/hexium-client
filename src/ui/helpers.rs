@@ -37,6 +37,7 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
 fn want(app: &mut App, cx: &Ctx, ui: &mut Ui) {
     ui::eyebrow(ui, "1 · What you want");
     let mut remove: Option<u64> = None;
+    let mut open_item: Option<(u64, String)> = None;
     ui.horizontal_wrapped(|ui| {
         if app.trades.helper.wanted.is_empty() {
             muted(ui, "Nothing yet — search below.");
@@ -51,7 +52,9 @@ fn want(app: &mut App, cx: &Ctx, ui: &mut Ui) {
                     ui.horizontal(|ui| {
                         let thumb = app.values.get(asset).and_then(|item| item.thumb.clone());
                         app.thumbs.show(ui, cx, thumb.as_deref(), egui::vec2(20.0, 20.0));
-                        ui.label(RichText::new(&name).size(12.0));
+                        if ui.link(RichText::new(&name).size(12.0)).clicked() {
+                            open_item = Some((asset, name.clone()));
+                        }
                         if value > 0 {
                             ui.label(RichText::new(ui::money(value as i64)).size(11.0).color(GOLD));
                         }
@@ -92,7 +95,9 @@ fn want(app: &mut App, cx: &Ctx, ui: &mut Ui) {
                 if ui.button("Add").clicked() {
                     add = Some((asset, name.clone()));
                 }
-                ui.label(&name);
+                if ui.link(&name).clicked() {
+                    open_item = Some((asset, name.clone()));
+                }
                 ui.label(RichText::new(format!("value {}", ui::money(value as i64))).size(11.5).color(GOLD));
             });
         }
@@ -100,6 +105,9 @@ fn want(app: &mut App, cx: &Ctx, ui: &mut Ui) {
             app.trades.helper.wanted.push(item);
             app.trades.helper.search.clear();
         }
+    }
+    if let Some((asset, name)) = open_item {
+        app.open_item(asset, &name);
     }
 }
 
@@ -166,6 +174,7 @@ fn offer(app: &mut App, cx: &Ctx, ui: &mut Ui) {
     }
     let full = app.trades.helper.give.len() >= TRADE_SIDE_LIMIT;
     let mut toggle: Option<u64> = None;
+    let mut open_item: Option<(u64, String)> = None;
     egui::ScrollArea::vertical().id_salt("helper-offer").max_height(220.0).auto_shrink([false, true]).show(ui, |ui| {
         let mut items = bundle.collectibles.clone();
         items.sort_by(|a, b| app.values.value_or(b.id, b.rap).cmp(&app.values.value_or(a.id, a.rap)));
@@ -178,7 +187,9 @@ fn offer(app: &mut App, cx: &Ctx, ui: &mut Ui) {
                 }
                 let icon = bundle.icons.get(&item.id).cloned();
                 app.thumbs.show(ui, cx, icon.as_deref(), egui::vec2(24.0, 24.0));
-                ui.label(RichText::new(&item.name).size(12.0).color(if picked { accent() } else { ui::INK }));
+                if ui.link(RichText::new(&item.name).size(12.0).color(if picked { accent() } else { ui::INK })).clicked() {
+                    open_item = Some((item.id, item.name.clone()));
+                }
                 if let Some(serial) = item.serial {
                     ui.label(RichText::new(format!("#{serial}")).size(11.0).color(MUTED));
                 }
@@ -190,6 +201,9 @@ fn offer(app: &mut App, cx: &Ctx, ui: &mut Ui) {
             });
         }
     });
+    if let Some((asset, name)) = open_item {
+        app.open_item(asset, &name);
+    }
     if let Some(id) = toggle {
         let give = &mut app.trades.helper.give;
         match give.iter().position(|picked| *picked == id) {
@@ -281,9 +295,12 @@ fn own_values(app: &mut App, ui: &mut Ui) {
         return;
     }
     let mut change: Option<(u64, String, Option<u64>)> = None;
+    let mut open_item: Option<(u64, String)> = None;
     for own in app.cfg.value_overrides.clone() {
         ui.horizontal(|ui| {
-            ui.label(&own.name);
+            if ui.link(&own.name).clicked() {
+                open_item = Some((own.asset_id, own.name.clone()));
+            }
             ui.label(RichText::new(format!("{} R$", ui::money(own.value as i64))).color(accent()));
             if let Some(theirs) = app.values.get(own.asset_id).and_then(|item| item.heximons_value) {
                 let difference = own.value as i64 - theirs as i64;
@@ -304,6 +321,9 @@ fn own_values(app: &mut App, ui: &mut Ui) {
     }
     if let Some((asset, name, value)) = change {
         app.set_override(asset, &name, value);
+    }
+    if let Some((asset, name)) = open_item {
+        app.open_item(asset, &name);
     }
 }
 

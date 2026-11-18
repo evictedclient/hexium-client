@@ -77,12 +77,15 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
             if bundle.data.assets.is_empty() {
                 muted(ui, "Nothing worn right now.");
             } else {
+                let mut open_item: Option<(u64, String)> = None;
                 ui::wrap(ui, |ui| {
                     for asset in &bundle.data.assets {
                         let icon = bundle.icons.get(&asset.id).cloned();
                         ui::tile(ui, 160.0, |ui| {
                             app.thumbs.show(ui, cx, icon.as_deref(), egui::vec2(136.0, 136.0));
-                            ui.label(RichText::new(&asset.name).size(11.5).strong());
+                            if ui.link(RichText::new(&asset.name).size(11.5).strong()).clicked() {
+                                open_item = Some((asset.id, asset.name.clone()));
+                            }
                             ui.label(
                                 RichText::new(if asset.asset_type.is_empty() {
                                     "asset"
@@ -95,6 +98,9 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
                         });
                     }
                 });
+                if let Some((asset, name)) = open_item {
+                    app.open_item(asset, &name);
+                }
             }
 
             if !bundle.data.scales.is_empty() || !bundle.data.body_colors.is_empty() {
