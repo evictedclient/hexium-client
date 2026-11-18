@@ -83,6 +83,9 @@ Not affiliated with hexium.wtf or Roblox.
   ticked ones the same way.
   Tick **Upgrade** (fewer, better items back) and/or **Downgrade** (more, smaller items back)
   to only get that kind of trade; each proposal is labelled.
+  **Who to send to** filters apply to all of it: account age, how long they have held the
+  item, online recently, skip people you already sent to (default 7 days), and the order
+  (random by default, or newest / longest holders).
 - **Your own values**: set a value on any limited; it replaces Heximons' (or adds one)
   everywhere values are used, and is labelled "Your value".
 - **Trade stats** over your last 40 completed trades, and an Owners list on every limited.

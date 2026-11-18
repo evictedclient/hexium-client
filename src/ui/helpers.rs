@@ -24,6 +24,8 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
     ui.add_space(10.0);
     offer(app, cx, ui);
     ui.add_space(10.0);
+    who(app, ui);
+    ui.add_space(10.0);
     owners(app, ui);
     ui.add_space(10.0);
     range_send(app, ui);
@@ -455,5 +457,62 @@ fn range_send(app: &mut App, ui: &mut Ui) {
     }
     if send {
         app.helper_send_proposals();
+    }
+}
+
+/// Which players the helpers pick: filters and order (saved; 0 = off).
+fn who(app: &mut App, ui: &mut Ui) {
+    ui::eyebrow(ui, "Who to send to");
+    muted(ui, "Applies to Find owners, mass send and value-range trades. 0 turns a filter off.");
+    let mut filters = app.cfg.player_filters;
+    let number = |ui: &mut Ui, value: &mut u32, label: &str, unit: &str| -> bool {
+        ui.horizontal(|ui| {
+            ui.label(label);
+            let changed = ui.add(egui::DragValue::new(value).range(0..=3650).suffix(unit)).changed();
+            if *value == 0 {
+                ui.label(RichText::new("off").size(11.0).color(MUTED));
+            }
+            changed
+        })
+        .inner
+    };
+    let mut changed = false;
+    egui::Grid::new("player-filters").num_columns(2).spacing(egui::vec2(24.0, 4.0)).show(ui, |ui| {
+        changed |= number(ui, &mut filters.min_account_days, "Account at least", " days old");
+        changed |= number(ui, &mut filters.active_within_days, "Online in the last", " days");
+        ui.end_row();
+        changed |= number(ui, &mut filters.min_held_days, "Has held the item at least", " days");
+        changed |= number(ui, &mut filters.max_held_days, "and at most", " days");
+        ui.end_row();
+        changed |= number(ui, &mut filters.skip_recent_days, "Skip people I sent to in the last", " days");
+        ui.horizontal(|ui| {
+            ui.label("Order");
+            for (value, label) in [(2u8, "Random"), (0, "Newest holders"), (1, "Longest holders")] {
+                if ui.selectable_label(filters.order == value, label).clicked() && filters.order != value {
+                    filters.order = value;
+                    changed = true;
+                }
+            }
+        });
+        ui.end_row();
+    });
+    let recent = app.recent_targets().len();
+    ui.horizontal(|ui| {
+        if filters.skip_recent_days > 0 {
+            muted(ui, &format!("{recent} recent recipient(s) skipped right now."));
+        }
+        if !app.cfg.recent_targets.is_empty() && ui.small_button("Forget who I sent to").clicked() {
+            app.cfg.recent_targets.clear();
+            app.cfg.save();
+        }
+    });
+    if filters.min_account_days > 0 {
+        muted(ui, "Account age needs one profile lookup per player, so at most 60 players are checked for it.");
+    }
+    if changed {
+        app.cfg.player_filters = filters;
+        app.cfg.save();
+        // Owners found under the old filters are out of date.
+        app.trades.helper.owners = Load::Idle;
     }
 }

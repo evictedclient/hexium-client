@@ -52,6 +52,12 @@ pub struct Config {
     /// Your own item values: they replace Heximons' or add missing ones.
     #[serde(default)]
     pub value_overrides: Vec<ValueOverride>,
+    /// Who the trade helpers send to (owner lists, mass send, value range).
+    #[serde(default)]
+    pub player_filters: PlayerFilters,
+    /// People mass sends went to: (user id, when, seconds since 1970).
+    #[serde(default)]
+    pub recent_targets: Vec<(u64, u64)>,
     /// Most owners one mass send goes to (1 to 50).
     #[serde(default = "default_mass_cap")]
     pub mass_cap: usize,
@@ -134,6 +140,8 @@ impl Default for Config {
             seen_deals: Vec::new(),
             ui_scale: default_scale(),
             mass_cap: default_mass_cap(),
+            player_filters: PlayerFilters::default(),
+            recent_targets: Vec::new(),
             mass_gap_secs: default_mass_gap(),
             value_overrides: Vec::new(),
             compact: false,
@@ -223,4 +231,34 @@ pub struct ValueOverride {
     pub asset_id: u64,
     pub name: String,
     pub value: u64,
+}
+
+/// Filters on the players the trade helpers pick. 0 turns a number off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PlayerFilters {
+    /// Account at least this many days old.
+    pub min_account_days: u32,
+    /// Has held the item at least / at most this many days.
+    pub min_held_days: u32,
+    pub max_held_days: u32,
+    /// Seen online within this many days.
+    pub active_within_days: u32,
+    /// Leave out people a mass send went to within this many days.
+    pub skip_recent_days: u32,
+    /// 0 newest holders first, 1 longest holders first, 2 random.
+    pub order: u8,
+}
+
+impl Default for PlayerFilters {
+    fn default() -> Self {
+        Self {
+            min_account_days: 0,
+            min_held_days: 0,
+            max_held_days: 0,
+            active_within_days: 0,
+            skip_recent_days: 7,
+            order: 2,
+        }
+    }
 }

@@ -966,6 +966,21 @@ async fn run_all(client: &ApiClient) -> Vec<Row> {
         rows.push(Row { name: "inventory collectibles (paged)", detail, verdict, ms: started.elapsed().as_millis() });
     }
     {
+        // The player filters need these two dates to parse.
+        let started = Instant::now();
+        let online = endpoints::presence_details(client, &[me])
+            .await
+            .ok()
+            .and_then(|states| states.get(&me).map(|state| state.last_online.clone()))
+            .and_then(|last| crate::app::days_since(&last));
+        let age = endpoints::user(client, me).await.ok().and_then(|profile| crate::app::days_since(&profile.created));
+        let (verdict, detail) = match (online, age) {
+            (Some(online), Some(age)) => (Verdict::Pass, format!("you: last online {online} day(s) ago · account {age} day(s) old")),
+            _ => (Verdict::Fail, format!("could not read last online ({online:?}) or account age ({age:?})")),
+        };
+        rows.push(Row { name: "player filter data", detail, verdict, ms: started.elapsed().as_millis() });
+    }
+    {
         let started = Instant::now();
         let (verdict, detail) = match endpoints::asset_owners(client, 907, 2).await {
             Ok(owners) => (

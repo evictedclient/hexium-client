@@ -2132,7 +2132,8 @@ impl App {
         self.trades.helper.owners_for = assets.clone();
         let cx = self.cx();
         let api = cx.api.clone();
-        cx.spawn(async move { Msg::HelperOwners(assets.clone(), find_candidates(&api, me, &assets).await) });
+        let (filters, recent) = (self.cfg.player_filters, self.recent_targets());
+        cx.spawn(async move { Msg::HelperOwners(assets.clone(), find_candidates(&api, me, &assets, filters, recent).await) });
     }
 
     /// Your copies for the helper's offer, as the confirmation dialog shows them.
@@ -2228,6 +2229,7 @@ impl App {
         seeds.truncate(12);
         self.trades.helper.proposals = Load::Busy;
         self.trades.helper.range_progress = (0, 0);
+        let (filters, recent) = (self.cfg.player_filters, self.recent_targets());
         let (tx, egui) = (self.tx.clone(), self.egui.clone());
         let cx = self.cx();
         let api = cx.api.clone();
@@ -2236,23 +2238,29 @@ impl App {
                 .await
                 .map(|page| page.items.iter().map(|trade| trade.partner_id).collect())
                 .unwrap_or_default();
-            // Players to look at, in the order their items were found.
-            let mut players: Vec<(u64, String)> = Vec::new();
+            // Owners of the seed items, then your player filters and order.
+            let mut found_players: Vec<Found> = Vec::new();
             for (asset, _) in &seeds {
                 if let Ok(owners) = endpoints::asset_owners(&api, *asset, 1).await {
                     for owner in owners {
                         if owner.user_id != me && owner.user_id > 1 && !busy.contains(&owner.user_id)
-                            && !players.iter().any(|(id, _)| *id == owner.user_id)
+                            && !found_players.iter().any(|(id, ..)| *id == owner.user_id)
                         {
-                            players.push((owner.user_id, owner.name));
+                            found_players.push((owner.user_id, owner.name, owner.updated));
                         }
                     }
                 }
-                if players.len() >= 40 {
+                if found_players.len() >= 150 {
                     break;
                 }
             }
-            players.truncate(40);
+            let ordered = order_players(found_players, &filters, &recent, now_secs());
+            let players: Vec<(u64, String)> = check_players(&api, ordered, &filters, 40)
+                .await
+                .into_iter()
+                .take(40)
+                .map(|(user, name, _)| (user, name))
+                .collect();
             let total = players.len();
             let middle = min + (max - min) / 2;
             let mut found: Vec<Proposal> = Vec::new();
@@ -2376,6 +2384,21 @@ impl App {
     /// Seconds between mass-send trades, from Settings (kept within its bounds).
     pub fn mass_gap(&self) -> u64 {
         self.cfg.mass_gap_secs.clamp(*MASS_GAP_RANGE.start(), *MASS_GAP_RANGE.end())
+    }
+
+    /// People a mass send went to within your "skip recent" days.
+    pub fn recent_targets(&self) -> std::collections::HashSet<u64> {
+        let days = self.cfg.player_filters.skip_recent_days as u64;
+        if days == 0 {
+            return Default::default();
+        }
+        let now = now_secs();
+        self.cfg
+            .recent_targets
+            .iter()
+            .filter(|(_, when)| now.saturating_sub(*when) < days * 86_400)
+            .map(|(user, _)| *user)
+            .collect()
     }
 
     pub fn stop_mass_send(&mut self) {
@@ -2984,6 +3007,13 @@ impl App {
         let action = pending.action.clone();
         if let WriteAction::MassSend { plan } = &action {
             let plan = plan.clone();
+            // Remember the recipients, for "skip people I sent to recently".
+            let now = now_secs();
+            self.cfg.recent_targets.retain(|(_, when)| now.saturating_sub(*when) < 90 * 86_400);
+            for (user, ..) in &plan.recipients {
+                self.cfg.recent_targets.push((*user, now));
+            }
+            self.cfg.save();
             let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
             self.mass = Some(MassStatus {
                 total: plan.recipients.len(),
@@ -4207,7 +4237,13 @@ fn pick_assets(inventory: &Load<models::TradeInventory>, wanted: &[u64], picked:
 /// Everyone who owns all of `assets` (one copy of each), minus you, the site's
 /// own account and hidden owners; newest owners first; busy = an open trade
 /// with you already.
-async fn find_candidates(api: &ApiClient, me: u64, assets: &[u64]) -> Res<Vec<Candidate>> {
+async fn find_candidates(
+    api: &ApiClient,
+    me: u64,
+    assets: &[u64],
+    filters: crate::config::PlayerFilters,
+    recent: std::collections::HashSet<u64>,
+) -> Res<Vec<Candidate>> {
     let busy: std::collections::HashSet<u64> = endpoints::trades(api, "outbound", None)
         .await
         .map(|page| page.items.iter().map(|trade| trade.partner_id).collect())
@@ -4222,7 +4258,7 @@ async fn find_candidates(api: &ApiClient, me: u64, assets: &[u64]) -> Res<Vec<Ca
         lists.push(by_user);
     }
     let Some(first) = lists.first() else { return Ok(Vec::new()) };
-    let mut found: Vec<Candidate> = first
+    let found: Vec<Candidate> = first
         .iter()
         .filter(|(user, _)| **user != me && **user > 1 && lists.iter().all(|list| list.contains_key(user)))
         .map(|(user, (name, _, updated))| Candidate {
@@ -4233,8 +4269,16 @@ async fn find_candidates(api: &ApiClient, me: u64, assets: &[u64]) -> Res<Vec<Ca
             busy: busy.contains(user),
         })
         .collect();
-    found.sort_by(|a, b| a.busy.cmp(&b.busy).then(b.updated.cmp(&a.updated)));
-    Ok(found)
+    // Your player filters and order; people already trading with you go last.
+    let base: Vec<Found> = found.iter().map(|owner| (owner.user_id, owner.name.clone(), owner.updated.clone())).collect();
+    let ordered = order_players(base, &filters, &recent, now_secs());
+    let checked = check_players(api, ordered, &filters, 0).await;
+    let mut kept: Vec<Candidate> = checked
+        .iter()
+        .filter_map(|(user, ..)| found.iter().find(|owner| owner.user_id == *user).cloned())
+        .collect();
+    kept.sort_by_key(|owner| owner.busy);
+    Ok(kept)
 }
 
 fn into_load<T>(result: Res<T>) -> Load<T> {
@@ -4722,5 +4766,151 @@ mod upgrade_tests {
         assert_eq!(picked, vec![1]);
         assert!(!RangeRules::upgrade_possible(1) && RangeRules::upgrade_possible(2));
         assert!(RangeRules::downgrade_possible(3) && !RangeRules::downgrade_possible(4));
+    }
+}
+
+/// Whole days since an ISO time (None when it does not parse).
+pub fn days_since(iso: &str) -> Option<u64> {
+    let day = models::day_number(iso)?;
+    let today = (std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or(0)
+        / 86_400) as i64;
+    Some((today - day).max(0) as u64)
+}
+
+/// A player as the helpers find them: id, name, and when they got the item.
+pub type Found = (u64, String, String);
+
+/// The cheap filters (recent recipients, how long they have held the item) and
+/// the order; no requests.
+pub fn order_players(mut players: Vec<Found>, filters: &crate::config::PlayerFilters, recent: &std::collections::HashSet<u64>, seed: u64) -> Vec<Found> {
+    players.retain(|(user, _, got)| {
+        if recent.contains(user) {
+            return false;
+        }
+        let held = days_since(got);
+        if filters.min_held_days > 0 && held.map_or(true, |days| days < filters.min_held_days as u64) {
+            return false;
+        }
+        if filters.max_held_days > 0 && held.map_or(true, |days| days > filters.max_held_days as u64) {
+            return false;
+        }
+        true
+    });
+    match filters.order {
+        0 => players.sort_by(|a, b| b.2.cmp(&a.2)),
+        1 => players.sort_by(|a, b| a.2.cmp(&b.2)),
+        _ => {
+            // A small shuffle (xorshift), so each run picks different people.
+            let mut state = seed | 1;
+            for index in (1..players.len()).rev() {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                players.swap(index, (state % (index as u64 + 1)) as usize);
+            }
+        }
+    }
+    players
+}
+
+/// The filters that need requests: online recently (presence, 100 at a time)
+/// and account age (one profile each, at most 60 looked up). Keeps the order;
+/// stops once `want` players pass (0 = no limit).
+pub async fn check_players(api: &ApiClient, players: Vec<Found>, filters: &crate::config::PlayerFilters, want: usize) -> Vec<Found> {
+    let mut players = players;
+    if filters.active_within_days > 0 {
+        let ids: Vec<u64> = players.iter().map(|(user, ..)| *user).collect();
+        let mut seen: HashMap<u64, String> = HashMap::new();
+        for chunk in ids.chunks(100) {
+            if let Ok(states) = endpoints::presence_details(api, chunk).await {
+                for (user, state) in states {
+                    seen.insert(user, state.last_online);
+                }
+            }
+        }
+        players.retain(|(user, ..)| {
+            seen.get(user)
+                .and_then(|last| days_since(last))
+                .is_some_and(|days| days <= filters.active_within_days as u64)
+        });
+    }
+    if filters.min_account_days > 0 {
+        let mut kept = Vec::new();
+        for player in players.into_iter().take(60) {
+            if let Ok(profile) = endpoints::user(api, player.0).await {
+                if days_since(&profile.created).is_some_and(|days| days >= filters.min_account_days as u64) {
+                    kept.push(player);
+                    if want > 0 && kept.len() >= want {
+                        break;
+                    }
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(120)).await;
+        }
+        return kept;
+    }
+    if want > 0 {
+        players.truncate(want);
+    }
+    players
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod filter_tests {
+    use super::*;
+
+    fn ago(days: i64) -> String {
+        let day = (now_secs() / 86_400) as i64 - days;
+        // Back to a date for the test: reuse the chart's civil date via day_number round trip.
+        let mut probe = String::new();
+        for year in 2000..2100 {
+            for month in 1..=12 {
+                for dom in 1..=31 {
+                    let text = format!("{year:04}-{month:02}-{dom:02}T12:00:00Z");
+                    if models::day_number(&text) == Some(day) {
+                        probe = text;
+                    }
+                }
+            }
+        }
+        probe
+    }
+
+    #[test]
+    fn held_days_recent_and_orders() {
+        let players = vec![
+            (1, "new".to_string(), ago(2)),
+            (2, "mid".to_string(), ago(20)),
+            (3, "old".to_string(), ago(200)),
+            (4, "recent".to_string(), ago(50)),
+        ];
+        let recent: std::collections::HashSet<u64> = [4].into_iter().collect();
+        let filters = crate::config::PlayerFilters { min_held_days: 10, max_held_days: 100, order: 0, ..Default::default() };
+        let kept = order_players(players.clone(), &filters, &recent, 1);
+        let ids: Vec<u64> = kept.iter().map(|player| player.0).collect();
+        assert_eq!(ids, vec![2]);
+        // Longest holders first, no held limits.
+        let longest = crate::config::PlayerFilters { order: 1, ..Default::default() };
+        let ids: Vec<u64> = order_players(players.clone(), &longest, &Default::default(), 1).iter().map(|player| player.0).collect();
+        assert_eq!(ids, vec![3, 4, 2, 1]);
+        // Random keeps everyone, and different seeds give different orders.
+        let random = crate::config::PlayerFilters { order: 2, ..Default::default() };
+        let a: Vec<u64> = order_players(players.clone(), &random, &Default::default(), 7).iter().map(|player| player.0).collect();
+        let b: Vec<u64> = order_players(players, &random, &Default::default(), 123_456).iter().map(|player| player.0).collect();
+        assert_eq!(a.len(), 4);
+        let mut sorted = a.clone();
+        sorted.sort();
+        assert_eq!(sorted, vec![1, 2, 3, 4]);
+        assert!(a != b || a.len() < 2);
     }
 }

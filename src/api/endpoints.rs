@@ -361,6 +361,8 @@ pub struct PresenceDetail {
     pub kind: i64,
     pub place_id: Option<u64>,
     pub location: String,
+    /// ISO time last seen online.
+    pub last_online: String,
 }
 
 pub async fn presence_details(client: &ApiClient, ids: &[u64]) -> Result<HashMap<u64, PresenceDetail>> {
@@ -380,6 +382,7 @@ pub async fn presence_details(client: &ApiClient, ids: &[u64]) -> Result<HashMap
                 kind,
                 place_id: if kind == 2 { opt_num_at(entry, "placeId").filter(|id| *id != 0) } else { None },
                 location: str_at(entry, "lastLocation"),
+                last_online: str_at(entry, "lastOnline"),
             },
         );
     }
