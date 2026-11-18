@@ -26,9 +26,9 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
     ui.add_space(10.0);
     who(app, ui);
     ui.add_space(10.0);
-    owners(app, ui);
+    owners(app, cx, ui);
     ui.add_space(10.0);
-    range_send(app, ui);
+    range_send(app, cx, ui);
     ui.add_space(10.0);
     own_values(app, ui);
 }
@@ -217,7 +217,7 @@ fn offer(app: &mut App, cx: &Ctx, ui: &mut Ui) {
 }
 
 /// Step 3: who owns every wanted item; trade one, or mass-send to several.
-fn owners(app: &mut App, ui: &mut Ui) {
+fn owners(app: &mut App, cx: &Ctx, ui: &mut Ui) {
     ui::eyebrow(ui, "3 · Owners");
     let wanted: Vec<u64> = app.trades.helper.wanted.iter().map(|(asset, _)| *asset).collect();
     let stale = app.trades.helper.owners_for != wanted;
@@ -258,7 +258,7 @@ fn owners(app: &mut App, ui: &mut Ui) {
             egui::ScrollArea::vertical().id_salt("helper-owners").max_height(240.0).auto_shrink([false, true]).show(ui, |ui| {
                 for owner in &list {
                     ui.horizontal(|ui| {
-                        if ui.link(&owner.name).clicked() {
+                        if ui::player_card::link(ui, cx, owner.user_id, &owner.name).clicked() {
                             profile = Some(owner.user_id);
                         }
                         let since: String = owner.updated.chars().take(10).collect();
@@ -329,7 +329,7 @@ fn own_values(app: &mut App, ui: &mut Ui) {
 
 /// Step 4: a value range instead of specific items. Generates one trade per
 /// player (their items adding up to the range), for you to review and send.
-fn range_send(app: &mut App, ui: &mut Ui) {
+fn range_send(app: &mut App, cx: &Ctx, ui: &mut Ui) {
     ui::eyebrow(ui, "4 · Or ask for a value range");
     muted(
         ui,
@@ -419,7 +419,7 @@ fn range_send(app: &mut App, ui: &mut Ui) {
                             if ui.checkbox(&mut ticked, "").changed() {
                                 toggle = Some(index);
                             }
-                            if ui.link(RichText::new(&proposal.name).font(ui::semibold(12.5))).clicked() {
+                            if ui::player_card::link(ui, cx, proposal.user_id, RichText::new(&proposal.name).font(ui::semibold(12.5))).clicked() {
                                 profile = Some(proposal.user_id);
                             }
                             ui.label(

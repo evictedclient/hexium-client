@@ -19,6 +19,7 @@ pub mod home;
 pub mod inventory;
 pub mod messages;
 pub mod money;
+pub mod player_card;
 pub mod profile;
 pub mod settings;
 pub mod trade_builder;

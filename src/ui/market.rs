@@ -187,7 +187,7 @@ fn activity(app: &mut App, cx: &Ctx, ui: &mut Ui) {
     }
 }
 
-fn ads(app: &mut App, _cx: &Ctx, ui: &mut Ui) {
+fn ads(app: &mut App, cx: &Ctx, ui: &mut Ui) {
     let list = match app.market.ads.clone() {
         Load::Ready(list) => list,
         Load::Err(error) => return failed(ui, &format!("Could not load trade ads: {error}")),
@@ -218,7 +218,7 @@ fn ads(app: &mut App, _cx: &Ctx, ui: &mut Ui) {
     for ad in shown {
         ui::tile(ui, width, |ui| {
             ui.horizontal(|ui| {
-                if ui.link(RichText::new(&ad.player_name).font(ui::semibold(13.0))).clicked() {
+                if ui::player_card::link(ui, cx, ad.player_id, RichText::new(&ad.player_name).font(ui::semibold(13.0))).clicked() {
                     profile = Some(ad.player_id);
                 }
                 muted(ui, &ago(ad.time));
@@ -271,7 +271,7 @@ fn ads(app: &mut App, _cx: &Ctx, ui: &mut Ui) {
     }
 }
 
-fn leaderboard(app: &mut App, _cx: &Ctx, ui: &mut Ui) {
+fn leaderboard(app: &mut App, cx: &Ctx, ui: &mut Ui) {
     let list = match app.market.leaderboard.clone() {
         Load::Ready(list) => list,
         Load::Err(error) => return failed(ui, &format!("Could not load the leaderboard: {error}")),
@@ -300,7 +300,7 @@ fn leaderboard(app: &mut App, _cx: &Ctx, ui: &mut Ui) {
             let you = row.player_id == me;
             let color = if you { accent() } else { ui::INK };
             ui.label(RichText::new(format!("{}", row.rank)).color(color));
-            if ui.link(RichText::new(&row.name).color(color)).clicked() {
+            if ui::player_card::link(ui, cx, row.player_id, RichText::new(&row.name).color(color)).clicked() {
                 profile = Some(row.player_id);
             }
             ui.label(RichText::new(ui::money(row.value as i64)).color(GOLD));

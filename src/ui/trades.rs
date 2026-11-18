@@ -33,7 +33,7 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
     }
     ui.add_space(4.0);
     if app.trades.show_stats {
-        stats(app, ui);
+        stats(app, cx, ui);
         return;
     }
 
@@ -62,7 +62,7 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
                                         trade.partner_name.as_str()
                                     };
                                     if trade.partner_id != 0
-                                        && ui.link(RichText::new(name).size(13.0).strong()).clicked()
+                                        && ui::player_card::link(ui, cx, trade.partner_id, RichText::new(name).size(13.0).strong()).clicked()
                                     {
                                         open_profile = Some(trade.partner_id);
                                     }
@@ -214,7 +214,7 @@ fn detail_body(
             column.horizontal(|ui| {
                 muted(ui, if mine { "your items" } else { "from" });
                 if !mine && offer.user_id != 0 {
-                    if ui.link(RichText::new(&offer.user_name).size(12.0)).clicked() {
+                    if ui::player_card::link(ui, cx, offer.user_id, RichText::new(&offer.user_name).size(12.0)).clicked() {
                         *open_profile = Some(offer.user_id);
                     }
                 }
@@ -376,7 +376,7 @@ pub fn side_value(values: &crate::values::Values, offer: &TradeOffer) -> u64 {
 }
 
 /// Your last completed trades, judged at today's Heximons values.
-fn stats(app: &mut App, ui: &mut Ui) {
+fn stats(app: &mut App, cx: &Ctx, ui: &mut Ui) {
     app.load_trade_stats();
     let mut open_profile_name: Option<String> = None;
     let mut open_profile_id: Option<u64> = None;
@@ -422,7 +422,7 @@ fn stats(app: &mut App, ui: &mut Ui) {
                 ui.end_row();
                 for row in &stats.rows {
                     ui.label(RichText::new(stamp(&row.created)).size(11.5).color(MUTED));
-                    if row.partner_id != 0 && ui.link(&row.partner).clicked() {
+                    if row.partner_id != 0 && ui::player_card::link(ui, cx, row.partner_id, &row.partner).clicked() {
                         open_profile_id = Some(row.partner_id);
                     } else if row.partner_id == 0 {
                         ui.label(&row.partner);

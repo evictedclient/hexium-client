@@ -352,7 +352,7 @@ fn servers(app: &mut App, cx: &Ctx, ui: &mut Ui, place: u64) {
                                         egui::Stroke::new(2.0, accent()),
                                     );
                                 }
-                                if face.clicked() && player.id != 0 {
+                                if ui::player_card::attach(face, cx, player.id).clicked() && player.id != 0 {
                                     profile = Some(player.id);
                                 }
                             }

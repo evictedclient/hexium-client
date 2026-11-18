@@ -245,7 +245,7 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
                             ui.horizontal(|ui| {
                                 app.thumbs.show(ui, cx, icon.as_deref(), egui::vec2(34.0, 34.0));
                                 ui.vertical(|ui| {
-                                    if ui.link(RichText::new(&friend.display_name).size(12.0)).clicked() {
+                                    if ui::player_card::link(ui, cx, id, RichText::new(&friend.display_name).size(12.0)).clicked() {
                                         app.open_profile(id);
                                     }
                                     ui.horizontal(|ui| {

@@ -28,6 +28,7 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
                                 ui.vertical(|ui| {
                                     if ui
                                         .link(RichText::new(&request.display_name).size(12.5).strong())
+                                        .on_hover_ui(|ui| ui::player_card::show(ui, cx, request.user_id))
                                         .clicked()
                                     {
                                         open_profile = Some(request.user_id);
@@ -98,7 +99,7 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
                         ui.horizontal(|ui| {
                             app.thumbs.show(ui, cx, icon.as_deref(), egui::vec2(46.0, 46.0));
                             ui.vertical(|ui| {
-                                if ui.link(RichText::new(&friend.display_name).size(12.5).strong()).clicked() {
+                                if ui::player_card::link(ui, cx, id, RichText::new(&friend.display_name).size(12.5).strong()).clicked() {
                                     app.open_profile(id);
                                 }
                                 muted(ui, &format!("@{}", friend.name));

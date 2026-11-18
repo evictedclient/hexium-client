@@ -115,7 +115,7 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
                                 app.thumbs.show(ui, cx, Some(icon.as_str()), egui::vec2(20.0, 20.0));
                             }
                             if row.agent_id != 0 && !row.agent_name.is_empty() {
-                                if ui.link(RichText::new(&row.agent_name).size(12.0)).clicked() {
+                                if ui::player_card::link(ui, cx, row.agent_id, RichText::new(&row.agent_name).size(12.0)).clicked() {
                                     open_profile = Some(row.agent_id);
                                 }
                             } else {

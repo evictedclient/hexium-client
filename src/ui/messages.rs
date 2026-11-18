@@ -130,7 +130,7 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
                         if sent || message.sender_id == 0 || name.is_empty() {
                             let shown = if name.is_empty() { "unknown" } else { name };
                             ui.label(RichText::new(shown).size(11.0).color(MUTED));
-                        } else if ui.link(RichText::new(name).size(11.0)).clicked() {
+                        } else if ui::player_card::link(ui, cx, message.sender_id, RichText::new(name).size(11.0)).clicked() {
                             open_profile = Some(message.sender_id);
                         }
                         ui.label(

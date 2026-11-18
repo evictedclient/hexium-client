@@ -147,7 +147,7 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
                                 });
                             });
                         });
-                        if response.clicked() {
+                        if ui::player_card::attach(response, cx, friend.id).clicked() {
                             open_profile = Some(friend.id);
                         }
                     }

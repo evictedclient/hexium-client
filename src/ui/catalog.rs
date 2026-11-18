@@ -209,7 +209,7 @@ pub fn dock(app: &mut App, cx: &Ctx, ctx: &egui::Context) {
                         ui.add_space(8.0);
                         resellers(app, cx, ui, detail.id);
                         ui.add_space(8.0);
-                        owners(app, ui, detail.id);
+                        owners(app, cx, ui, detail.id);
                     }
                 }
                 Load::Err(error) => {
@@ -281,7 +281,7 @@ fn resellers(app: &mut App, cx: &Ctx, ui: &mut Ui, asset: u64) {
                             let icon = page.icons.get(&listing.seller_id).cloned();
                             app.thumbs.show(ui, cx, icon.as_deref(), egui::vec2(24.0, 24.0));
                             let name = if listing.seller_name.is_empty() { "unknown" } else { listing.seller_name.as_str() };
-                            if listing.seller_id != 0 && ui.link(RichText::new(name).size(12.5)).clicked() {
+                            if listing.seller_id != 0 && ui::player_card::link(ui, cx, listing.seller_id, RichText::new(name).size(12.5)).clicked() {
                                 open_profile = Some(listing.seller_id);
                             } else if listing.seller_id == 0 {
                                 ui.label(RichText::new(name).size(12.5));
@@ -532,7 +532,7 @@ fn deals(app: &mut App, cx: &Ctx, ui: &mut Ui) {
 }
 
 /// Everyone who owns a copy, with a Trade button each (loaded on request).
-fn owners(app: &mut App, ui: &mut Ui, asset: u64) {
+fn owners(app: &mut App, cx: &Ctx, ui: &mut Ui, asset: u64) {
     ui.horizontal(|ui| {
         ui::eyebrow(ui, "Owners");
         let loaded = matches!(&app.catalog.owners, Some((shown, _)) if *shown == asset);
@@ -557,7 +557,7 @@ fn owners(app: &mut App, ui: &mut Ui, asset: u64) {
                 .show(ui, |ui| {
                     for owner in &list {
                         ui.horizontal(|ui| {
-                            if ui.link(&owner.name).clicked() {
+                            if ui::player_card::link(ui, cx, owner.user_id, &owner.name).clicked() {
                                 profile = Some(owner.user_id);
                             }
                             if let Some(serial) = owner.serial {
