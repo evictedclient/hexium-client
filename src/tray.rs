@@ -90,10 +90,10 @@ mod platform {
     use windows::Win32::UI::WindowsAndMessaging::{
         AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DispatchMessageW, GetCursorPos,
         GetMessageW, GetSystemMetrics, LoadImageW, PostMessageW, RegisterClassW, RegisterWindowMessageW,
-        SetForegroundWindow, TrackPopupMenu, TranslateMessage, HICON, HWND_MESSAGE, IMAGE_ICON, LR_LOADFROMFILE,
+        SetForegroundWindow, TrackPopupMenu, TranslateMessage, HICON, IMAGE_ICON, LR_LOADFROMFILE,
         MF_SEPARATOR, MF_STRING, MSG, SM_CXSMICON, SM_CYSMICON, TPM_BOTTOMALIGN, TPM_RETURNCMD, TPM_RIGHTBUTTON,
-        WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_CONTEXTMENU, WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_NULL,
-        WM_RBUTTONUP, WNDCLASSW,
+        WINDOW_STYLE, WM_APP, WM_CONTEXTMENU, WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_NULL,
+        WM_RBUTTONUP, WNDCLASSW, WS_EX_TOOLWINDOW,
     };
 
     use super::{dispatch, Action};
@@ -233,8 +233,11 @@ mod platform {
                 };
                 RegisterClassW(&description);
                 TASKBAR_CREATED.store(RegisterWindowMessageW(w!("TaskbarCreated")), Ordering::Relaxed);
+                // A hidden top-level window, not a message-only one: message-only
+                // windows never get the TaskbarCreated broadcast, so the icon would
+                // vanish for good whenever Explorer restarts.
                 let window = CreateWindowExW(
-                    WINDOW_EX_STYLE(0),
+                    WS_EX_TOOLWINDOW,
                     class,
                     w!("hexium client tray"),
                     WINDOW_STYLE(0),
@@ -242,7 +245,7 @@ mod platform {
                     0,
                     0,
                     0,
-                    Some(HWND_MESSAGE),
+                    None,
                     None,
                     instance.map(Into::into),
                     None,
