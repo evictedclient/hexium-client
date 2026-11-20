@@ -207,10 +207,7 @@ pub fn resale_window(app: &mut App, cx: &Ctx, ctx: &egui::Context) {
             ui.horizontal_top(|ui| {
                 app.thumbs.show(ui, cx, icon.as_deref(), egui::vec2(96.0, 96.0));
                 ui.vertical(|ui| {
-                    if ui
-                        .link(RichText::new(&name).font(ui::display(20.0)))
-                        .on_hover_text("Open the item's details")
-                        .clicked()
+                    if ui::item_card::link(ui, cx, asset_id, RichText::new(&name).font(ui::display(20.0))).clicked()
                     {
                         open_item = true;
                     }

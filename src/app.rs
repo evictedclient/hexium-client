@@ -853,6 +853,8 @@ pub struct TradeHelper {
     /// smaller items back). Neither ticked: any trade in the range.
     pub range_upgrade: bool,
     pub range_downgrade: bool,
+    /// The proposal shown in the trade preview (the last one hovered).
+    pub range_focus: Option<usize>,
 }
 
 /// Someone who owns every wanted item.
@@ -2139,7 +2141,7 @@ impl App {
     }
 
     /// Your copies for the helper's offer, as the confirmation dialog shows them.
-    fn helper_give_side(&self) -> TradeSide {
+    pub fn helper_give_side(&self) -> TradeSide {
         let Some(bundle) = self.inventory.data.ready() else { return TradeSide::default() };
         let copies: Vec<&models::Collectible> = self
             .trades
@@ -2230,6 +2232,7 @@ impl App {
         seeds.sort_by(|a, b| b.1.cmp(&a.1));
         seeds.truncate(12);
         self.trades.helper.proposals = Load::Busy;
+        self.trades.helper.range_focus = None;
         self.trades.helper.range_progress = (0, 0);
         let (filters, recent) = (self.cfg.player_filters, self.recent_targets());
         let (tx, egui) = (self.tx.clone(), self.egui.clone());
@@ -2565,6 +2568,7 @@ impl App {
             &self.values_raw,
             self.cfg.value_overrides.iter().map(|item| (item.asset_id, item.name.as_str(), item.value)),
         );
+        crate::ui::item_card::set_values(&self.values);
         // Totals and deals depend on values.
         self.catalog.deal_live.clear();
         self.trades.stats = Load::Idle;

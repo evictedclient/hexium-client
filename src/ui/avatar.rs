@@ -83,7 +83,7 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
                         let icon = bundle.icons.get(&asset.id).cloned();
                         ui::tile(ui, 160.0, |ui| {
                             app.thumbs.show(ui, cx, icon.as_deref(), egui::vec2(136.0, 136.0));
-                            if ui.link(RichText::new(&asset.name).size(11.5).strong()).clicked() {
+                            if ui::item_card::link(ui, cx, asset.id, RichText::new(&asset.name).size(11.5).strong()).clicked() {
                                 open_item = Some((asset.id, asset.name.clone()));
                             }
                             ui.label(

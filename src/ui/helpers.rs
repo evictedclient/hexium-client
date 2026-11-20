@@ -30,7 +30,7 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
     ui.add_space(10.0);
     range_send(app, cx, ui);
     ui.add_space(10.0);
-    own_values(app, ui);
+    own_values(app, cx, ui);
 }
 
 /// Step 1: the items you want (searched from Heximons' list and your values).
@@ -52,7 +52,7 @@ fn want(app: &mut App, cx: &Ctx, ui: &mut Ui) {
                     ui.horizontal(|ui| {
                         let thumb = app.values.get(asset).and_then(|item| item.thumb.clone());
                         app.thumbs.show(ui, cx, thumb.as_deref(), egui::vec2(20.0, 20.0));
-                        if ui.link(RichText::new(&name).size(12.0)).clicked() {
+                        if ui::item_card::link(ui, cx, asset, RichText::new(&name).size(12.0)).clicked() {
                             open_item = Some((asset, name.clone()));
                         }
                         if value > 0 {
@@ -95,7 +95,7 @@ fn want(app: &mut App, cx: &Ctx, ui: &mut Ui) {
                 if ui.button("Add").clicked() {
                     add = Some((asset, name.clone()));
                 }
-                if ui.link(&name).clicked() {
+                if ui::item_card::link(ui, cx, asset, &name).clicked() {
                     open_item = Some((asset, name.clone()));
                 }
                 ui.label(RichText::new(format!("value {}", ui::money(value as i64))).size(11.5).color(GOLD));
@@ -187,7 +187,7 @@ fn offer(app: &mut App, cx: &Ctx, ui: &mut Ui) {
                 }
                 let icon = bundle.icons.get(&item.id).cloned();
                 app.thumbs.show(ui, cx, icon.as_deref(), egui::vec2(24.0, 24.0));
-                if ui.link(RichText::new(&item.name).size(12.0).color(if picked { accent() } else { ui::INK })).clicked() {
+                if ui::item_card::link(ui, cx, item.id, RichText::new(&item.name).size(12.0).color(if picked { accent() } else { ui::INK })).clicked() {
                     open_item = Some((item.id, item.name.clone()));
                 }
                 if let Some(serial) = item.serial {
@@ -288,7 +288,7 @@ fn owners(app: &mut App, cx: &Ctx, ui: &mut Ui) {
 }
 
 /// Your own values, editable here as well as in each item's details.
-fn own_values(app: &mut App, ui: &mut Ui) {
+fn own_values(app: &mut App, cx: &Ctx, ui: &mut Ui) {
     ui::eyebrow(ui, "Your values");
     if app.cfg.value_overrides.is_empty() {
         muted(ui, "None yet. Set one from a limited's details in the Catalog; it replaces Heximons' value (or adds one) everywhere.");
@@ -298,7 +298,7 @@ fn own_values(app: &mut App, ui: &mut Ui) {
     let mut open_item: Option<(u64, String)> = None;
     for own in app.cfg.value_overrides.clone() {
         ui.horizontal(|ui| {
-            if ui.link(&own.name).clicked() {
+            if ui::item_card::link(ui, cx, own.asset_id, &own.name).clicked() {
                 open_item = Some((own.asset_id, own.name.clone()));
             }
             ui.label(RichText::new(format!("{} R$", ui::money(own.value as i64))).color(accent()));
@@ -354,6 +354,33 @@ fn range_send(app: &mut App, cx: &Ctx, ui: &mut Ui) {
             app.helper_generate();
         }
     });
+    // Quick ranges around what you give (items by value, plus Robux).
+    let give_total = app.helper_give_side().value + app.trades.helper.give_robux.parse::<u64>().unwrap_or(0);
+    ui.horizontal(|ui| {
+        muted(ui, "Quick");
+        for (label, percent) in [("-10%", -10i64), ("-5%", -5), ("Equal", 0), ("+5%", 5), ("+10%", 10), ("+20%", 20)] {
+            let (min, max) = preset_range(give_total, percent);
+            let tip = match percent {
+                0 => format!("About what you give: {} to {} R$ of value.", ui::money(min as i64), ui::money(max as i64)),
+                p if p > 0 => format!("About {p}% more than you give: {} to {} R$ of value.", ui::money(min as i64), ui::money(max as i64)),
+                p => format!("About {}% less than you give: {} to {} R$ of value.", -p, ui::money(min as i64), ui::money(max as i64)),
+            };
+            let active = app.helper_range() == Some((min, max));
+            let button = egui::Button::new(RichText::new(label).size(12.0)).selected(active);
+            if ui
+                .add_enabled(give_total > 0, button)
+                .on_hover_text(tip)
+                .on_disabled_hover_text("Pick what you offer in step 2 first.")
+                .clicked()
+            {
+                app.trades.helper.range_min = min.to_string();
+                app.trades.helper.range_max = max.to_string();
+            }
+        }
+        if give_total > 0 {
+            muted(ui, &format!("· you give {} R$", ui::money(give_total as i64)));
+        }
+    });
     // Upgrade / downgrade, where they can apply to your offer.
     let my_count = app.trades.helper.give.len();
     let can_up = crate::app::RangeRules::upgrade_possible(my_count);
@@ -391,6 +418,14 @@ fn range_send(app: &mut App, cx: &Ctx, ui: &mut Ui) {
     let mut all: Option<bool> = None;
     let mut profile: Option<u64> = None;
     let mut send = false;
+    let mut open_item: Option<(u64, String)> = None;
+    let mut hovered: Option<usize> = None;
+    let focus = app.trades.helper.range_focus;
+    let preview_width = (ui.available_width() * 0.36).clamp(240.0, 340.0);
+    let list_width = (ui.available_width() - preview_width - 14.0).max(260.0);
+    ui.horizontal_top(|ui| {
+    ui.vertical(|ui| {
+    ui.set_width(list_width);
     match &app.trades.helper.proposals {
         Load::Busy => {
             let (done, total) = app.trades.helper.range_progress;
@@ -414,7 +449,7 @@ fn range_send(app: &mut App, cx: &Ctx, ui: &mut Ui) {
                 });
                 egui::ScrollArea::vertical().id_salt("range-proposals").max_height(300.0).auto_shrink([false, true]).show(ui, |ui| {
                     for (index, proposal) in proposals.iter().enumerate() {
-                        ui.horizontal(|ui| {
+                        let top = ui.horizontal(|ui| {
                             let mut ticked = proposal.selected;
                             if ui.checkbox(&mut ticked, "").changed() {
                                 toggle = Some(index);
@@ -433,12 +468,21 @@ fn range_send(app: &mut App, cx: &Ctx, ui: &mut Ui) {
                                 crate::app::TradeKind::Even => {}
                             }
                         });
-                        ui.horizontal_wrapped(|ui| {
+                        let bottom = ui.horizontal_wrapped(|ui| {
                             ui.add_space(26.0);
-                            for (_, _, name, value) in &proposal.items {
-                                ui.label(RichText::new(format!("{name} ({})", ui::money(*value as i64))).size(11.5).color(MUTED));
+                            for (_, asset, name, value) in &proposal.items {
+                                if ui::item_card::link(ui, cx, *asset, RichText::new(format!("{name} ({})", ui::money(*value as i64))).size(11.5)).clicked() {
+                                    open_item = Some((*asset, name.clone()));
+                                }
                             }
-                        });
+                        }).response;
+                        let rect = top.response.rect.union(bottom.rect);
+                        if ui.rect_contains_pointer(rect) {
+                            hovered = Some(index);
+                        }
+                        if focus == Some(index) {
+                            ui.painter().rect_stroke(rect.expand(2.0), 4.0, egui::Stroke::new(1.0, accent()));
+                        }
                     }
                 });
                 ui.horizontal(|ui| {
@@ -459,6 +503,19 @@ fn range_send(app: &mut App, cx: &Ctx, ui: &mut Ui) {
                 });
             }
         }
+    }
+    });
+    ui.add_space(10.0);
+    ui.vertical(|ui| {
+        ui.set_width(preview_width);
+        preview(app, cx, ui, hovered.or(focus), &mut open_item);
+    });
+    });
+    if hovered.is_some() {
+        app.trades.helper.range_focus = hovered;
+    }
+    if let Some((asset, name)) = open_item {
+        app.open_item(asset, &name);
     }
     if let Load::Ready(proposals) = &mut app.trades.helper.proposals {
         if let Some(index) = toggle {
@@ -534,5 +591,140 @@ fn who(app: &mut App, ui: &mut Ui) {
         app.cfg.save();
         // Owners found under the old filters are out of date.
         app.trades.helper.owners = Load::Idle;
+    }
+}
+
+/// A range centred `percent` above (or below) what you give, 2.5% either side.
+fn preset_range(give: u64, percent: i64) -> (u64, u64) {
+    let give = give as f64;
+    let target = give * (1.0 + percent as f64 / 100.0);
+    let band = give * 0.025;
+    let min = (target - band).round().max(1.0) as u64;
+    let max = ((target + band).round() as u64).max(min);
+    (min, max)
+}
+
+/// The trade preview beside the generated trades: what you give, what the
+/// hovered (or first ticked) trade gets you, and the verdict.
+fn preview(app: &App, cx: &Ctx, ui: &mut Ui, focus: Option<usize>, open_item: &mut Option<(u64, String)>) {
+    ui::card_frame().show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui::eyebrow(ui, "Trade preview");
+        let robux: u64 = app.trades.helper.give_robux.parse().unwrap_or(0);
+        let copies: Vec<&crate::api::models::Collectible> = match app.inventory.data.ready() {
+            Some(bundle) => app
+                .trades
+                .helper
+                .give
+                .iter()
+                .filter_map(|id| bundle.collectibles.iter().find(|item| item.user_asset_id == *id))
+                .collect(),
+            None => Vec::new(),
+        };
+        let give_value: u64 = copies.iter().map(|item| app.values.value_or(item.id, item.rap)).sum();
+        let give_rap: u64 = copies.iter().map(|item| item.rap).sum();
+
+        ui.label(RichText::new("You give").font(ui::semibold(13.0)));
+        if copies.is_empty() && robux == 0 {
+            muted(ui, "Nothing yet: pick items in step 2.");
+        }
+        for item in &copies {
+            row(ui, cx, item.id, &item.name, app.values.value_or(item.id, item.rap), open_item);
+        }
+        if robux > 0 {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Robux").size(12.0));
+                amount_right(ui, robux);
+            });
+        }
+        total(ui, give_value + robux, give_rap);
+
+        ui.add_space(4.0);
+        ui.separator();
+        let proposal = match &app.trades.helper.proposals {
+            Load::Ready(proposals) => focus
+                .and_then(|index| proposals.get(index))
+                .or_else(|| proposals.iter().find(|proposal| proposal.selected))
+                .or_else(|| proposals.first()),
+            _ => None,
+        };
+        match proposal {
+            Some(proposal) => {
+                ui.label(RichText::new(format!("You get from {}", proposal.name)).font(ui::semibold(13.0)));
+                let mut get_rap = 0u64;
+                for (_, asset, name, value) in &proposal.items {
+                    row(ui, cx, *asset, name, *value, open_item);
+                    get_rap += app.values.get(*asset).map(|item| item.rap).unwrap_or(0);
+                }
+                total(ui, proposal.total, get_rap);
+                ui.add_space(4.0);
+                ui::analyze::verdict(
+                    ui,
+                    ui::analyze::Side { rap: give_rap, value: give_value, robux },
+                    ui::analyze::Side { rap: get_rap, value: proposal.total, robux: 0 },
+                    &[],
+                );
+                muted(ui, "Hover a trade on the left to preview it.");
+            }
+            None => {
+                ui.label(RichText::new("You get").font(ui::semibold(13.0)));
+                let giving = give_value + robux;
+                match app.helper_range() {
+                    Some((min, max)) if giving > 0 => {
+                        let percent = |amount: u64| (amount as f64 - giving as f64) / giving as f64 * 100.0;
+                        muted(
+                            ui,
+                            &format!(
+                                "{} to {} R$ of value ({:+.0}% to {:+.0}% of what you give).",
+                                ui::money(min as i64),
+                                ui::money(max as i64),
+                                percent(min),
+                                percent(max)
+                            ),
+                        );
+                    }
+                    _ => muted(ui, "Set a range, then generate trades to preview them here."),
+                }
+            }
+        }
+    });
+}
+
+fn row(ui: &mut Ui, cx: &Ctx, asset: u64, name: &str, value: u64, open_item: &mut Option<(u64, String)>) {
+    ui.horizontal(|ui| {
+        if ui::item_card::link(ui, cx, asset, RichText::new(name).size(12.0)).clicked() {
+            *open_item = Some((asset, name.to_string()));
+        }
+        amount_right(ui, value);
+    });
+}
+
+fn amount_right(ui: &mut Ui, value: u64) {
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        ui.label(RichText::new(ui::money(value as i64)).size(12.0).color(GOLD));
+    });
+}
+
+fn total(ui: &mut Ui, value: u64, rap: u64) {
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Total").size(12.0).strong());
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.label(RichText::new(format!("RAP {}", ui::money(rap as i64))).size(11.5).color(MUTED));
+            ui.label(RichText::new(format!("{} R$", ui::money(value as i64))).size(12.0).strong().color(GOLD));
+        });
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::preset_range;
+
+    #[test]
+    fn presets_sit_around_the_offer() {
+        assert_eq!(preset_range(1000, 0), (975, 1025));
+        assert_eq!(preset_range(1000, 10), (1075, 1125));
+        assert_eq!(preset_range(1000, -5), (925, 975));
+        // Never asks for nothing.
+        assert_eq!(preset_range(10, -100).0, 1);
     }
 }

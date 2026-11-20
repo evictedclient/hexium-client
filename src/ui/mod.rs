@@ -17,6 +17,7 @@ pub mod groups;
 pub mod helpers;
 pub mod home;
 pub mod inventory;
+pub mod item_card;
 pub mod messages;
 pub mod money;
 pub mod player_card;

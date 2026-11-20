@@ -244,7 +244,7 @@ fn ads(app: &mut App, cx: &Ctx, ui: &mut Ui) {
                         total += item.map(|item| item.value).unwrap_or(0);
                         let name = item.map(|item| item.name.clone()).unwrap_or_else(|| format!("Item {asset}"));
                         let color = if mine.contains(asset) { accent() } else { ui::INK };
-                        if ui.link(RichText::new(&name).size(12.0).color(color)).clicked() {
+                        if ui::item_card::link(ui, cx, *asset, RichText::new(&name).size(12.0).color(color)).clicked() {
                             open_item = Some((*asset, name.clone()));
                         }
                     }

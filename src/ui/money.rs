@@ -95,7 +95,7 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
                         ui.horizontal(|ui| {
                             ui.set_min_width(item_width);
                         if row.item_id != 0 && row.item_kind == "Asset" {
-                            if ui.link(RichText::new(name).size(12.0)).clicked() {
+                            if ui::item_card::link(ui, cx, row.item_id, RichText::new(name).size(12.0)).clicked() {
                                 open_item = Some((row.item_id, row.item_name.clone()));
                             }
                         } else {

@@ -229,7 +229,7 @@ fn detail_body(
                 column.horizontal(|ui| {
                     app.thumbs.show(ui, cx, icon.as_deref(), egui::vec2(44.0, 44.0));
                     ui.vertical(|ui| {
-                        if ui.link(RichText::new(&asset.name).size(12.0).strong()).clicked() {
+                        if ui::item_card::link(ui, cx, asset.asset_id, RichText::new(&asset.name).size(12.0).strong()).clicked() {
                             open_item = Some((asset.asset_id, asset.name.clone()));
                         }
                         ui.horizontal(|ui| {

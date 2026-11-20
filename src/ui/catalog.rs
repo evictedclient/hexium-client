@@ -10,7 +10,7 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
     h1(ui, "Catalog");
     muted(ui, "Clothing, accessories and collectibles.");
     ui.add_space(8.0);
-    watchlist(app, ui);
+    watchlist(app, cx, ui);
 
     ui.horizontal(|ui| {
         if ui.selectable_label(!app.catalog.deals_mode, "Browse").clicked() {
@@ -380,7 +380,7 @@ fn watch_controls(app: &mut App, ui: &mut Ui, asset: u64, name: &str) {
 }
 
 /// Watched limiteds, at the top of the Catalog screen.
-fn watchlist(app: &mut App, ui: &mut Ui) {
+fn watchlist(app: &mut App, cx: &Ctx, ui: &mut Ui) {
     if app.cfg.watchlist.is_empty() {
         return;
     }
@@ -395,7 +395,7 @@ fn watchlist(app: &mut App, ui: &mut Ui) {
         ui.add_space(2.0);
         for item in app.cfg.watchlist.clone() {
             ui.horizontal(|ui| {
-                if ui.link(RichText::new(&item.name).size(12.5)).clicked() {
+                if ui::item_card::link(ui, cx, item.asset_id, RichText::new(&item.name).size(12.5)).clicked() {
                     open = Some((item.asset_id, item.name.clone()));
                 }
                 ui.label(
