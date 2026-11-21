@@ -248,6 +248,8 @@ pub struct PlayerFilters {
     pub skip_recent_days: u32,
     /// 0 newest holders first, 1 longest holders first, 2 random.
     pub order: u8,
+    /// Only players with Builders Club (any tier); trades need it on both sides.
+    pub builders_club_only: bool,
 }
 
 impl Default for PlayerFilters {
@@ -259,6 +261,7 @@ impl Default for PlayerFilters {
             active_within_days: 0,
             skip_recent_days: 7,
             order: 2,
+            builders_club_only: true,
         }
     }
 }

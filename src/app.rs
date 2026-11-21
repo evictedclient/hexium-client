@@ -4843,18 +4843,35 @@ pub async fn check_players(api: &ApiClient, players: Vec<Found>, filters: &crate
                 .is_some_and(|days| days <= filters.active_within_days as u64)
         });
     }
-    if filters.min_account_days > 0 {
+    if filters.min_account_days > 0 || filters.builders_club_only {
+        // One lookup per player for each check, so only so many are looked at.
+        let cap = if filters.min_account_days > 0 { 60 } else { 150 };
         let mut kept = Vec::new();
-        for player in players.into_iter().take(60) {
-            if let Ok(profile) = endpoints::user(api, player.0).await {
-                if days_since(&profile.created).is_some_and(|days| days >= filters.min_account_days as u64) {
-                    kept.push(player);
-                    if want > 0 && kept.len() >= want {
-                        break;
-                    }
+        for player in players.into_iter().take(cap) {
+            if filters.builders_club_only {
+                let (tier, asked) = builders_club(api, player.0).await;
+                if asked {
+                    tokio::time::sleep(Duration::from_millis(60)).await;
+                }
+                // An unknown tier (the lookup failed) does not rule anyone out.
+                if tier == Some(0) {
+                    continue;
                 }
             }
-            tokio::time::sleep(Duration::from_millis(120)).await;
+            if filters.min_account_days > 0 {
+                let old_enough = match endpoints::user(api, player.0).await {
+                    Ok(profile) => days_since(&profile.created).is_some_and(|days| days >= filters.min_account_days as u64),
+                    Err(_) => false,
+                };
+                tokio::time::sleep(Duration::from_millis(120)).await;
+                if !old_enough {
+                    continue;
+                }
+            }
+            kept.push(player);
+            if want > 0 && kept.len() >= want {
+                break;
+            }
         }
         return kept;
     }
@@ -4862,6 +4879,24 @@ pub async fn check_players(api: &ApiClient, players: Vec<Found>, filters: &crate
         players.truncate(want);
     }
     players
+}
+
+/// A player's Builders Club tier, remembered for the session (it rarely
+/// changes). Returns the tier (`None` when the lookup failed) and whether a
+/// request was made.
+pub async fn builders_club(api: &ApiClient, user: u64) -> (Option<u8>, bool) {
+    static TIERS: std::sync::OnceLock<std::sync::Mutex<HashMap<u64, u8>>> = std::sync::OnceLock::new();
+    let tiers = TIERS.get_or_init(Default::default);
+    if let Some(tier) = tiers.lock().unwrap().get(&user).copied() {
+        return (Some(tier), false);
+    }
+    match endpoints::membership(api, user).await {
+        Ok(tier) => {
+            tiers.lock().unwrap().insert(user, tier);
+            (Some(tier), true)
+        }
+        Err(_) => (None, true),
+    }
 }
 
 fn now_secs() -> u64 {

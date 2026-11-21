@@ -573,6 +573,13 @@ fn who(app: &mut App, ui: &mut Ui) {
         });
         ui.end_row();
     });
+    if ui
+        .checkbox(&mut filters.builders_club_only, "Only players with Builders Club")
+        .on_hover_text("Trades need Builders Club on both sides. Any tier counts (Builders Club, Turbo, Outrageous). One quick lookup per player, remembered until you restart.")
+        .changed()
+    {
+        changed = true;
+    }
     let recent = app.recent_targets().len();
     ui.horizontal(|ui| {
         if filters.skip_recent_days > 0 {

@@ -33,6 +33,12 @@ pub async fn user(client: &ApiClient, id: u64) -> Result<UserProfile> {
     ))
 }
 
+/// A player's Builders Club tier: 0 none, 1 Builders Club, 2 Turbo, 3 Outrageous.
+pub async fn membership(client: &ApiClient, id: u64) -> Result<u8> {
+    let value = client.get(&api("premiumfeatures", &format!("/v1/users/{id}/validate-membership"))).await?;
+    Ok(value.as_u64().unwrap_or(0).min(3) as u8)
+}
+
 pub async fn user_status(client: &ApiClient, id: u64) -> Result<String> {
     let value = client
         .get(&api("users", &format!("/v1/users/{id}/status")))
