@@ -248,6 +248,7 @@ pub fn show(app: &mut App, _cx: &Ctx, ui: &mut Ui) {
             muted(ui, &format!("Version {}", crate::update::CURRENT));
             muted(ui, &format!("from github.com/{}", crate::update::REPO));
         });
+        muted(ui, "New versions download in the background and run from the next start.");
         if ui.checkbox(&mut app.cfg.auto_update, "Install new versions on their own").changed() {
             app.cfg.save();
             if app.cfg.auto_update && crate::update::enabled() {
