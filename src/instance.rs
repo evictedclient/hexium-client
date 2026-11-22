@@ -35,6 +35,21 @@ pub fn claim() -> bool {
     platform::claim()
 }
 
+/// Like [`claim`], retrying until `wait` runs out (an update restarting
+/// the client while the old process is still closing).
+pub fn claim_waiting(wait: Duration) -> bool {
+    let deadline = Instant::now() + wait;
+    loop {
+        if platform::try_claim() {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return platform::claim();
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
 /// For a second launch: raise the running client's window. Waits briefly in
 /// case the first one is still opening its window.
 pub fn wake_existing() {
@@ -71,6 +86,24 @@ mod platform {
                 // The handle stays open until the process exits.
                 Ok(_handle) => GetLastError() != ERROR_ALREADY_EXISTS,
                 // Could not even ask: better two windows than none.
+                Err(_) => true,
+            }
+        }
+    }
+
+    /// Like `claim`, but lets go of the handle when someone else holds the
+    /// lock, so asking again later can succeed.
+    pub fn try_claim() -> bool {
+        unsafe {
+            match CreateMutexW(None, false, &HSTRING::from(MUTEX_NAME)) {
+                Ok(handle) => {
+                    if GetLastError() == ERROR_ALREADY_EXISTS {
+                        let _ = windows::Win32::Foundation::CloseHandle(handle);
+                        false
+                    } else {
+                        true
+                    }
+                }
                 Err(_) => true,
             }
         }

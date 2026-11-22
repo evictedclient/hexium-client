@@ -84,11 +84,13 @@ pub fn show(ui: &mut Ui, cx: &Ctx, user_id: u64) {
         ui.vertical(|ui| match &state {
             Card::Busy => {
                 ui.horizontal(|ui| {
+                    club_badge(ui, cx, user_id);
                     ui.add(egui::Spinner::new().size(12.0));
                     muted(ui, "Loading…");
                 });
             }
             Card::Ready { stats: Ok(Some((latest, rank))), .. } => {
+                club_line(ui, cx, user_id);
                 line(ui, "Value", latest.value);
                 line(ui, "RAP", latest.rap);
                 let mut extra = format!("{} collectibles", ui::money(latest.collectibles as i64));
@@ -97,8 +99,14 @@ pub fn show(ui: &mut Ui, cx: &Ctx, user_id: u64) {
                 }
                 muted(ui, &extra);
             }
-            Card::Ready { stats: Ok(None), .. } => muted(ui, "Heximons does not track this player."),
-            Card::Ready { stats: Err(_), .. } => muted(ui, "Could not reach Heximons."),
+            Card::Ready { stats: Ok(None), .. } => {
+                club_line(ui, cx, user_id);
+                muted(ui, "Heximons does not track this player.");
+            }
+            Card::Ready { stats: Err(_), .. } => {
+                club_line(ui, cx, user_id);
+                muted(ui, "Could not reach Heximons.");
+            }
         });
     });
     muted(ui, "Click to open their profile.");
@@ -124,4 +132,65 @@ fn fetch(cx: &Ctx, user_id: u64) {
         cards().lock().unwrap().insert(user_id, Card::Ready { at: Instant::now(), avatar, stats });
         repaint.request_repaint();
     });
+}
+
+/// The Builders Club tier as a small badge (BC, TBC, OBC); nothing for none
+/// or while it is being looked up.
+pub fn club_badge(ui: &mut Ui, cx: &Ctx, user_id: u64) {
+    if let Some((label, color)) = tier(cx, user_id).and_then(club_label) {
+        ui::pill(ui, label, color);
+    }
+}
+
+/// The card's line: the badge, or "No Builders Club" when they have none.
+fn club_line(ui: &mut Ui, cx: &Ctx, user_id: u64) {
+    match tier(cx, user_id) {
+        Some(0) => muted(ui, "No Builders Club"),
+        Some(tier) => {
+            if let Some((label, color)) = club_label(tier) {
+                ui.horizontal(|ui| {
+                    ui::pill(ui, label, color);
+                    muted(ui, club_name(label));
+                });
+            }
+        }
+        None => {}
+    }
+}
+
+fn club_label(tier: u8) -> Option<(&'static str, egui::Color32)> {
+    match tier {
+        1 => Some(("BC", ui::accent())),
+        2 => Some(("TBC", GOLD)),
+        3 => Some(("OBC", ui::GREEN)),
+        _ => None,
+    }
+}
+
+fn club_name(label: &str) -> &'static str {
+    match label {
+        "BC" => "Builders Club",
+        "TBC" => "Turbo Builders Club",
+        _ => "Outrageous Builders Club",
+    }
+}
+
+/// The tier from the session's cache, starting one lookup when it is missing.
+fn tier(cx: &Ctx, user_id: u64) -> Option<u8> {
+    if user_id == 0 {
+        return None;
+    }
+    if let Some(tier) = crate::app::known_club_tier(user_id) {
+        return Some(tier);
+    }
+    static ASKED: OnceLock<Mutex<std::collections::HashSet<u64>>> = OnceLock::new();
+    if ASKED.get_or_init(Default::default).lock().unwrap().insert(user_id) {
+        let api = cx.api.clone();
+        let repaint = cx.egui.clone();
+        cx.rt.spawn(async move {
+            crate::app::builders_club(&api, user_id).await;
+            repaint.request_repaint();
+        });
+    }
+    None
 }

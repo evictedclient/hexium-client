@@ -560,6 +560,7 @@ fn owners(app: &mut App, cx: &Ctx, ui: &mut Ui, asset: u64) {
                             if ui::player_card::link(ui, cx, owner.user_id, &owner.name).clicked() {
                                 profile = Some(owner.user_id);
                             }
+                            ui::player_card::club_badge(ui, cx, owner.user_id);
                             if let Some(serial) = owner.serial {
                                 ui.label(RichText::new(format!("#{serial}")).size(11.5).color(GOLD));
                             }

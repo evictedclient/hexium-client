@@ -7,6 +7,7 @@
 
 pub mod analyze;
 pub mod avatar;
+pub mod bot;
 pub mod catalog;
 pub mod chart;
 pub mod chat;
@@ -847,6 +848,7 @@ pub fn chrome(app: &mut App, cx: &Ctx, ctx: &egui::Context) {
                         ui.vertical(|ui| {
                             ui.set_max_width((width - 56.0).max(320.0));
                             notice(app, ui);
+                            update_bar(ui);
                             mass_strip(app, ui);
                             match app.view {
                                 View::Home => home::show(app, cx, ui),
@@ -862,6 +864,7 @@ pub fn chrome(app: &mut App, cx: &Ctx, ctx: &egui::Context) {
                                 View::Chat => chat::show(app, cx, ui),
                                 View::Market => market::show(app, cx, ui),
                                 View::Helpers => helpers::screen(app, cx, ui),
+                                View::Bot => bot::show(app, cx, ui),
                                 View::Trades => trades::show(app, cx, ui),
                                 View::Settings => settings::show(app, cx, ui),
                             }
@@ -938,7 +941,7 @@ pub const NAV_GROUPS: [(&str, &[View]); 5] = [
     ("", &[View::Home]),
     ("You", &[View::Profile, View::Avatar, View::Inventory, View::Money]),
     ("Play", &[View::Games, View::Catalog, View::Market]),
-    ("Social", &[View::Friends, View::Chat, View::Messages, View::Trades, View::Helpers, View::Groups]),
+    ("Social", &[View::Friends, View::Chat, View::Messages, View::Trades, View::Helpers, View::Bot, View::Groups]),
     ("App", &[View::Settings]),
 ];
 
@@ -1319,6 +1322,35 @@ fn confirm_dialog(app: &mut App, ctx: &egui::Context) {
         app.confirm_write();
     } else if cancel {
         app.cancel_write();
+    }
+}
+
+/// Shown once an update is installed.
+fn update_bar(ui: &mut Ui) {
+    let crate::update::Status::Ready(version) = crate::update::status() else {
+        return;
+    };
+    let dismissed = ui.data(|data| data.get_temp::<String>(egui::Id::new("update-bar-dismissed"))) == Some(version.clone());
+    if dismissed {
+        return;
+    }
+    let mut later = false;
+    callout(ui, GREEN, |ui| {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(format!("Version {version} is installed; it runs from the next start.")).size(13.0).color(INK));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.small_button("Later").clicked() {
+                    later = true;
+                }
+                if ui.small_button("Restart now").clicked() {
+                    crate::update::restart();
+                }
+            });
+        });
+    });
+    ui.add_space(10.0);
+    if later {
+        ui.data_mut(|data| data.insert_temp(egui::Id::new("update-bar-dismissed"), version));
     }
 }
 

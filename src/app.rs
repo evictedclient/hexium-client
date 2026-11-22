@@ -31,12 +31,13 @@ pub enum View {
     Chat,
     Market,
     Helpers,
+    Bot,
     Trades,
     Settings,
 }
 
 impl View {
-    pub const ALL: [View; 15] = [
+    pub const ALL: [View; 16] = [
         View::Home,
         View::Games,
         View::Catalog,
@@ -50,6 +51,7 @@ impl View {
         View::Chat,
         View::Market,
         View::Helpers,
+        View::Bot,
         View::Trades,
         View::Settings,
     ];
@@ -69,6 +71,7 @@ impl View {
             View::Chat => "Chat",
             View::Market => "Market",
             View::Helpers => "Trade helpers",
+            View::Bot => "Trade bot",
             View::Trades => "Trades",
             View::Settings => "Settings",
         }
@@ -182,6 +185,8 @@ pub enum Msg {
     PlayerStats(u64, Res<Option<crate::values::PlayerStats>>),
     /// The watcher saw a counter move: refresh the badges.
     ActivityChanged,
+    /// The trade bot sent a trade to this player.
+    BotSent(u64),
 }
 
 /// Something that changes the signed-in account. Nothing here is sent until the
@@ -956,8 +961,9 @@ pub struct MassStatus {
 
 /// Bounds for the mass send settings: people per send, and seconds between
 /// trades (a floor, because bursts of trades are what get accounts flagged).
-pub const MASS_CAP_RANGE: std::ops::RangeInclusive<usize> = 1..=50;
-pub const MASS_GAP_RANGE: std::ops::RangeInclusive<u64> = 10..=600;
+/// Mass send has no upper limits. The wait keeps a short floor: Hexium
+/// rate-limits trade sends, and back-to-back sends get refused.
+pub const MASS_MIN_GAP: u64 = 1;
 
 /// The Market screen: Heximons' value changes, sales, trade ads and leaderboard.
 #[derive(Default)]
@@ -1093,6 +1099,8 @@ pub struct App {
     hwnd: Arc<AtomicIsize>,
     /// A mass send under way (or just finished).
     pub mass: Option<MassStatus>,
+    /// The trade bot (idle until started).
+    pub bot: Arc<crate::bot::Shared>,
     /// Ctrl+F: the current screen's search box takes the keyboard.
     pub focus_search: bool,
     /// Text size last applied (so egui's own Ctrl +/- zoom is not undone).
@@ -1127,6 +1135,7 @@ impl App {
             rx,
             egui: cc.egui_ctx.clone(),
             applied_theme: String::new(),
+            bot: crate::bot::Shared::new(cfg.bot.clone(), cfg.player_filters),
             cfg,
             thumbs: Thumbs::default(),
             view: View::Home,
@@ -1197,6 +1206,9 @@ impl App {
             }
         }
         app.start_tray();
+        if app.cfg.auto_update && crate::update::enabled() {
+            crate::update::start_background(&app.rt, app.egui.clone());
+        }
         if app.api.has_session() {
             app.load_session();
             app.load_banners();
@@ -2207,6 +2219,7 @@ impl App {
             my_best: my_values.iter().copied().max().unwrap_or(0),
             upgrade: self.trades.helper.range_upgrade,
             downgrade: self.trades.helper.range_downgrade,
+            max_items: TRADE_SIDE_LIMIT,
         };
         // Items you are giving away should not come back to you.
         let giving: std::collections::HashSet<u64> = self
@@ -2383,12 +2396,12 @@ impl App {
 
     /// People per mass send, from Settings (kept within its bounds).
     pub fn mass_cap(&self) -> usize {
-        self.cfg.mass_cap.clamp(*MASS_CAP_RANGE.start(), *MASS_CAP_RANGE.end())
+        self.cfg.mass_cap.max(1)
     }
 
     /// Seconds between mass-send trades, from Settings (kept within its bounds).
     pub fn mass_gap(&self) -> u64 {
-        self.cfg.mass_gap_secs.clamp(*MASS_GAP_RANGE.start(), *MASS_GAP_RANGE.end())
+        self.cfg.mass_gap_secs.max(MASS_MIN_GAP)
     }
 
     /// People a mass send went to within your "skip recent" days.
@@ -2404,6 +2417,22 @@ impl App {
             .filter(|(_, when)| now.saturating_sub(*when) < days * 86_400)
             .map(|(user, _)| *user)
             .collect()
+    }
+
+    /// Hands the bot your current settings, filters and recent recipients.
+    pub fn sync_bot(&self) {
+        *self.bot.settings.lock().unwrap() = self.cfg.bot.clone();
+        *self.bot.filters.lock().unwrap() = self.cfg.player_filters;
+        *self.bot.recent.lock().unwrap() = self.recent_targets();
+    }
+
+    pub fn start_bot(&mut self) {
+        let Some(me) = self.me_id() else {
+            self.notice = Some((false, "Sign in before starting the trade bot.".to_string()));
+            return;
+        };
+        self.sync_bot();
+        crate::bot::start(self.bot.clone(), self.api.clone(), me, &self.rt, self.egui.clone(), self.tx.clone());
     }
 
     pub fn stop_mass_send(&mut self) {
@@ -3646,7 +3675,7 @@ impl App {
                     self.load_trade_detail(id);
                 }
             }
-            View::Settings => {}
+            View::Bot | View::Settings => {}
         }
         self.on_view_enter();
         self.load_banners();
@@ -3675,7 +3704,7 @@ impl App {
             View::Messages => self.load_messages(),
             View::Chat => self.load_chat(),
             View::Market => self.load_market(),
-            View::Helpers => self.load_inventory(),
+            View::Helpers | View::Bot => self.load_inventory(),
             View::Trades => self.load_trades(),
             View::Settings => {}
         }
@@ -4103,6 +4132,13 @@ impl App {
                 if self.trades.helper.owners_for == assets {
                     self.trades.helper.owners = into_load(result);
                 }
+            }
+            Msg::BotSent(user) => {
+                let now = now_secs();
+                self.cfg.recent_targets.retain(|(_, when)| now.saturating_sub(*when) < 90 * 86_400);
+                self.cfg.recent_targets.push((user, now));
+                self.cfg.save();
+                self.bot.recent.lock().unwrap().insert(user);
             }
             Msg::MassProgress { sent, failed, error, done } => {
                 if let Some(mass) = self.mass.as_mut() {
@@ -4672,6 +4708,8 @@ pub struct RangeRules {
     pub my_best: u64,
     pub upgrade: bool,
     pub downgrade: bool,
+    /// Most items asked for (up to four).
+    pub max_items: usize,
 }
 
 impl RangeRules {
@@ -4685,6 +4723,9 @@ impl RangeRules {
         pool.truncate(40);
         let mut best: Option<(u64, usize, Vec<u64>, TradeKind)> = None;
         let mut consider = |picked: &[usize]| {
+            if picked.len() > self.max_items {
+                return;
+            }
             let sum: u64 = picked.iter().map(|index| pool[*index].1).sum();
             if sum < self.min || sum > self.max {
                 return;
@@ -4745,7 +4786,7 @@ mod upgrade_tests {
     const THEIRS: [(u64, u64); 5] = [(1, 5000), (2, 2000), (3, 1800), (4, 1500), (5, 1200)];
 
     fn rules(my_count: usize, my_best: u64, upgrade: bool, downgrade: bool) -> RangeRules {
-        RangeRules { min: 4500, max: 5500, my_count, my_best, upgrade, downgrade }
+        RangeRules { min: 4500, max: 5500, my_count, my_best, upgrade, downgrade, max_items: TRADE_SIDE_LIMIT }
     }
 
     #[test]
@@ -4885,8 +4926,7 @@ pub async fn check_players(api: &ApiClient, players: Vec<Found>, filters: &crate
 /// changes). Returns the tier (`None` when the lookup failed) and whether a
 /// request was made.
 pub async fn builders_club(api: &ApiClient, user: u64) -> (Option<u8>, bool) {
-    static TIERS: std::sync::OnceLock<std::sync::Mutex<HashMap<u64, u8>>> = std::sync::OnceLock::new();
-    let tiers = TIERS.get_or_init(Default::default);
+    let tiers = club_tiers();
     if let Some(tier) = tiers.lock().unwrap().get(&user).copied() {
         return (Some(tier), false);
     }
@@ -4897,6 +4937,16 @@ pub async fn builders_club(api: &ApiClient, user: u64) -> (Option<u8>, bool) {
         }
         Err(_) => (None, true),
     }
+}
+
+fn club_tiers() -> &'static std::sync::Mutex<HashMap<u64, u8>> {
+    static TIERS: std::sync::OnceLock<std::sync::Mutex<HashMap<u64, u8>>> = std::sync::OnceLock::new();
+    TIERS.get_or_init(Default::default)
+}
+
+/// A tier already looked up this session, without asking Hexium.
+pub fn known_club_tier(user: u64) -> Option<u8> {
+    club_tiers().lock().unwrap().get(&user).copied()
 }
 
 fn now_secs() -> u64 {

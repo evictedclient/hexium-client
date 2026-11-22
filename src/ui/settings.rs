@@ -106,14 +106,23 @@ pub fn show(app: &mut App, _cx: &Ctx, ui: &mut Ui) {
         let mut changed = false;
         ui.horizontal(|ui| {
             ui.label("Send to at most");
-            let (low, high) = (*crate::app::MASS_CAP_RANGE.start(), *crate::app::MASS_CAP_RANGE.end());
-            changed |= ui.add(egui::Slider::new(&mut app.cfg.mass_cap, low..=high).suffix(" people")).changed();
+            changed |= ui
+                .add(egui::DragValue::new(&mut app.cfg.mass_cap).range(1..=usize::MAX).speed(0.5).suffix(" people"))
+                .changed();
         });
         ui.horizontal(|ui| {
             ui.label("Wait between trades");
-            let (low, high) = (*crate::app::MASS_GAP_RANGE.start(), *crate::app::MASS_GAP_RANGE.end());
             changed |= ui
-                .add(egui::Slider::new(&mut app.cfg.mass_gap_secs, low..=high).suffix(" s").logarithmic(true))
+                .add(
+                    egui::DragValue::new(&mut app.cfg.mass_gap_secs)
+                        .range(crate::app::MASS_MIN_GAP..=u64::MAX)
+                        .speed(0.5)
+                        .suffix(" s"),
+                )
+                .on_hover_text(format!(
+                    "At least {} s: Hexium refuses trades sent back to back.",
+                    crate::app::MASS_MIN_GAP
+                ))
                 .changed();
         });
         if ui.small_button("Back to 10 people, 30 s").clicked() {
@@ -232,6 +241,48 @@ pub fn show(app: &mut App, _cx: &Ctx, ui: &mut Ui) {
         }
     });
 
+
+    h2(ui, "Updates");
+    ui::tile(ui, 620.0, |ui| {
+        ui.horizontal(|ui| {
+            muted(ui, &format!("Version {}", crate::update::CURRENT));
+            muted(ui, &format!("from github.com/{}", crate::update::REPO));
+        });
+        if ui.checkbox(&mut app.cfg.auto_update, "Install new versions on their own").changed() {
+            app.cfg.save();
+            if app.cfg.auto_update && crate::update::enabled() {
+                crate::update::check(&app.rt, app.egui.clone());
+            }
+        }
+        ui.horizontal(|ui| {
+            let status = crate::update::status();
+            let busy = matches!(status, crate::update::Status::Checking | crate::update::Status::Downloading(_));
+            if crate::update::enabled() {
+                if ui.add_enabled(!busy, egui::Button::new("Check now")).clicked() {
+                    crate::update::check(&app.rt, app.egui.clone());
+                }
+            } else {
+                muted(ui, "Development build: updates are off.");
+            }
+            match status {
+                crate::update::Status::Idle => {}
+                crate::update::Status::Checking => muted(ui, "Checking..."),
+                crate::update::Status::UpToDate => {
+                    ui.label(RichText::new("Up to date.").color(GREEN));
+                }
+                crate::update::Status::Downloading(version) => muted(ui, &format!("Downloading {version}...")),
+                crate::update::Status::Ready(version) => {
+                    ui.label(RichText::new(format!("{version} installed.")).color(GREEN));
+                    if ui.button("Restart now").clicked() {
+                        crate::update::restart();
+                    }
+                }
+                crate::update::Status::Failed(error) => {
+                    ui.label(RichText::new(error).color(DANGER));
+                }
+            }
+        });
+    });
 
     h2(ui, "What this client talks to");
     ui::tile(ui, 620.0, |ui| {

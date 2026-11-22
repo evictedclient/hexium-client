@@ -38,6 +38,11 @@ fn values() -> &'static RwLock<Arc<Values>> {
     VALUES.get_or_init(Default::default)
 }
 
+/// The values as last handed over (Heximons plus your overrides).
+pub fn current_values() -> Arc<Values> {
+    values().read().unwrap().clone()
+}
+
 /// Called whenever the app's values change (Heximons refresh or your overrides).
 pub fn set_values(current: &Values) {
     *values().write().unwrap() = Arc::new(current.clone());

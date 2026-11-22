@@ -91,8 +91,9 @@ Not affiliated with hexium.wtf or Roblox.
 - **Trade stats** over your last 40 completed trades, and an Owners list on every limited.
 - **Keyboard and display**: Ctrl+1–9 screens, Ctrl+F search, Ctrl+R refresh; text size and a
   compact layout in Settings.
-- **Releases**: pushing a `v*` tag builds the Windows exe on GitHub and attaches it to a
-  release.
+- **Releases and updates**: every push to `main` tests and builds one self-contained exe on GitHub
+  and publishes it as release `v0.2.<run>`. Release builds check for a newer release at start and
+  every six hours, install it next to themselves and run it from the next start (Settings → Updates).
 - **Make it yours**: pick an accent colour and background in Settings.
 
 Purchases are deliberately not supported: the site's buy flow includes an anti-bot

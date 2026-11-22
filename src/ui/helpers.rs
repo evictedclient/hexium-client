@@ -261,6 +261,7 @@ fn owners(app: &mut App, cx: &Ctx, ui: &mut Ui) {
                         if ui::player_card::link(ui, cx, owner.user_id, &owner.name).clicked() {
                             profile = Some(owner.user_id);
                         }
+                        ui::player_card::club_badge(ui, cx, owner.user_id);
                         let since: String = owner.updated.chars().take(10).collect();
                         ui.label(RichText::new(format!("since {since}")).size(11.0).color(MUTED));
                         if owner.busy {
@@ -457,6 +458,7 @@ fn range_send(app: &mut App, cx: &Ctx, ui: &mut Ui) {
                             if ui::player_card::link(ui, cx, proposal.user_id, RichText::new(&proposal.name).font(ui::semibold(12.5))).clicked() {
                                 profile = Some(proposal.user_id);
                             }
+                            ui::player_card::club_badge(ui, cx, proposal.user_id);
                             ui.label(
                                 RichText::new(format!("value {}", ui::money(proposal.total as i64)))
                                     .size(12.0)
@@ -538,7 +540,7 @@ fn range_send(app: &mut App, cx: &Ctx, ui: &mut Ui) {
 }
 
 /// Which players the helpers pick: filters and order (saved; 0 = off).
-fn who(app: &mut App, ui: &mut Ui) {
+pub fn who(app: &mut App, ui: &mut Ui) {
     ui::eyebrow(ui, "Who to send to");
     muted(ui, "Applies to Find owners, mass send and value-range trades. 0 turns a filter off.");
     let mut filters = app.cfg.player_filters;

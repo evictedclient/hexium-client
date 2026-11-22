@@ -76,6 +76,12 @@ pub struct Config {
     /// The exe the Start-menu shortcut was last written for.
     #[serde(default)]
     pub shortcut_exe: Option<String>,
+    /// The trade bot.
+    #[serde(default)]
+    pub bot: BotConfig,
+    /// Install new releases from GitHub on their own.
+    #[serde(default = "default_true")]
+    pub auto_update: bool,
 }
 
 fn default_deal_alert_min() -> f32 {
@@ -146,6 +152,8 @@ impl Default for Config {
             value_overrides: Vec::new(),
             compact: false,
             shortcut_exe: None,
+            bot: BotConfig::default(),
+            auto_update: true,
         }
     }
 }
@@ -262,6 +270,87 @@ impl Default for PlayerFilters {
             skip_recent_days: 7,
             order: 2,
             builders_club_only: true,
+        }
+    }
+}
+
+/// Settings for one kind of new trade (upgrades or downgrades).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct KindSettings {
+    pub on: bool,
+    /// What you get back, compared with what you give, in percent.
+    pub min_gain: i32,
+    pub max_gain: i32,
+    /// Upgrades: most items you give. Downgrades: most items you get back.
+    pub max_items: usize,
+}
+
+impl Default for KindSettings {
+    fn default() -> Self {
+        Self { on: false, min_gain: 0, max_gain: 20, max_items: 4 }
+    }
+}
+
+/// The trade bot's settings (Trade bot screen).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BotConfig {
+    /// Make new trades from your inventory and send them.
+    pub send_new: bool,
+    /// Answer inbound trades below your bar with a counter.
+    pub counter: bool,
+    pub upgrades: KindSettings,
+    pub downgrades: KindSettings,
+    /// Downgrades give from your this-many most valuable items; upgrades
+    /// give from everything below them.
+    pub top_items: usize,
+    /// With both kinds on: the share of each round's new trades that are
+    /// upgrades, in percent (the rest are downgrades).
+    pub upgrade_share: u32,
+    /// Other trades (when neither kind is on) and counters: what you get
+    /// back compared with what you give, in percent.
+    pub min_gain: i32,
+    pub max_gain: i32,
+    /// Send without asking; off, trades wait in the review list.
+    pub auto_send: bool,
+    pub per_hour: u32,
+    pub gap_secs: u64,
+    /// Minutes between rounds of finding trades and reading inbound ones.
+    pub cycle_minutes: u64,
+    /// New trades found per round.
+    pub per_cycle: usize,
+    /// Move item values up or down for demand, recent sales and the
+    /// week's price change.
+    pub adjust: bool,
+    /// How strongly, in percent (100 = as described on screen).
+    pub adjust_strength: u32,
+    /// Count an item at its cheapest listing when that is below its value.
+    pub use_best_price: bool,
+    /// Items (asset ids) the bot never gives away.
+    pub keep: Vec<u64>,
+}
+
+impl Default for BotConfig {
+    fn default() -> Self {
+        Self {
+            send_new: true,
+            counter: true,
+            upgrades: KindSettings { on: false, min_gain: -10, max_gain: 10, max_items: 3 },
+            downgrades: KindSettings { on: false, min_gain: 5, max_gain: 25, max_items: 4 },
+            top_items: 2,
+            upgrade_share: 50,
+            min_gain: 5,
+            max_gain: 20,
+            auto_send: false,
+            per_hour: 20,
+            gap_secs: 30,
+            cycle_minutes: 10,
+            per_cycle: 5,
+            adjust: true,
+            adjust_strength: 100,
+            use_best_price: true,
+            keep: Vec::new(),
         }
     }
 }

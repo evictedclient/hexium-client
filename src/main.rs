@@ -5,6 +5,7 @@
 mod api;
 mod app;
 mod autostart;
+mod bot;
 mod check;
 mod config;
 mod icon;
@@ -15,6 +16,7 @@ mod pricewatch;
 mod shortcut;
 mod tray;
 mod ui;
+mod update;
 mod values;
 mod watch;
 
@@ -53,8 +55,15 @@ fn main() -> eframe::Result<()> {
         return Ok(());
     }
 
+    update::clean_up();
     // One client at a time: a second launch raises the first and leaves.
-    if !instance::claim() {
+    // Started by an update's restart: wait for the old one to close first.
+    let claimed = if arguments.iter().any(|argument| argument == "--updated") {
+        instance::claim_waiting(std::time::Duration::from_secs(15))
+    } else {
+        instance::claim()
+    };
+    if !claimed {
         instance::wake_existing();
         return Ok(());
     }

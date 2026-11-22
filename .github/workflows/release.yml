@@ -1,18 +1,30 @@
-# Builds the Windows client when a version tag is pushed (git tag v0.2.0 &&
-# git push origin v0.2.0) and attaches the exe to a GitHub release for that tag.
+# Every push to main tests the client, builds one self-contained exe and
+# publishes it as release v0.2.<run number>. Running clients find the newest
+# release and update themselves (src/update.rs).
 name: Release
 
 on:
   push:
-    tags:
-      - "v*"
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+      - ".gitignore"
+  workflow_dispatch:
 
 permissions:
   contents: write
 
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   windows:
     runs-on: windows-latest
+    env:
+      VERSION: 0.2.${{ github.run_number }}
+      # The C runtime inside the exe: no Visual C++ redistributable needed.
+      RUSTFLAGS: -C target-feature=+crt-static
     steps:
       - uses: actions/checkout@v4
 
@@ -20,19 +32,29 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: Set version
+        shell: pwsh
+        run: |
+          (Get-Content Cargo.toml -Raw) -replace '(?m)^version = ".*"$', "version = `"$env:VERSION`"" |
+            Set-Content Cargo.toml -NoNewline
+
       - name: Test
-        run: cargo test --release
+        run: cargo test --release --target x86_64-pc-windows-msvc
 
       - name: Build
-        run: cargo build --release
+        run: cargo build --release --target x86_64-pc-windows-msvc
 
       - name: Package
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item target/release/hexium-client.exe "dist/hexium-client-${{ github.ref_name }}.exe"
+          Copy-Item target/x86_64-pc-windows-msvc/release/hexium-client.exe dist/hexium-client.exe
 
       - uses: softprops/action-gh-release@v2
         with:
-          files: dist/*.exe
+          tag_name: v${{ env.VERSION }}
+          name: v${{ env.VERSION }}
+          target_commitish: ${{ github.sha }}
+          files: dist/hexium-client.exe
           generate_release_notes: true
+          make_latest: true
