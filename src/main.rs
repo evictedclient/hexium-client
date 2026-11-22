@@ -67,6 +67,10 @@ fn main() -> eframe::Result<()> {
         instance::wake_existing();
         return Ok(());
     }
+    // Every launch picks up the newest release first, then runs it.
+    if !arguments.iter().any(|argument| argument == "--updated") && config::load().auto_update && update::update_on_launch() {
+        update::restart();
+    }
 
     let start_minimized = arguments.iter().any(|argument| argument == "--minimized");
     // Keep an existing sign-in entry pointing at this exe.

@@ -104,7 +104,7 @@ pub fn check(rt: &tokio::runtime::Handle, egui: egui::Context) {
     }
     set(Status::Checking, &egui);
     rt.spawn(async move {
-        let result = run(&egui).await;
+        let result = run(Some(&egui), false).await;
         match result {
             Ok(Some(version)) => set(Status::Ready(version), &egui),
             Ok(None) => set(Status::UpToDate, &egui),
@@ -113,15 +113,31 @@ pub fn check(rt: &tokio::runtime::Handle, egui: egui::Context) {
     });
 }
 
-async fn run(egui: &egui::Context) -> Result<Option<String>, String> {
+/// On launch, before the window opens: installs a newer release if GitHub
+/// answers quickly. True when one was installed (the caller restarts).
+pub fn update_on_launch() -> bool {
+    if !enabled() {
+        return false;
+    }
+    let Ok(runtime) = tokio::runtime::Builder::new_current_thread().enable_all().build() else {
+        return false;
+    };
+    matches!(runtime.block_on(run(None, true)), Ok(Some(_)))
+}
+
+/// Finds and installs a newer release. `quick`: give up on GitHub after a
+/// few seconds (launch must not hang offline).
+async fn run(egui: Option<&egui::Context>, quick: bool) -> Result<Option<String>, String> {
     let client = reqwest::Client::builder()
         .user_agent(concat!("hexium-client-updater/", env!("CARGO_PKG_VERSION")))
+        .connect_timeout(Duration::from_secs(if quick { 4 } else { 20 }))
         .timeout(Duration::from_secs(120))
         .build()
         .map_err(|error| error.to_string())?;
     let response = client
         .get(format!("https://api.github.com/repos/{REPO}/releases/latest"))
         .header("Accept", "application/vnd.github+json")
+        .timeout(Duration::from_secs(if quick { 5 } else { 30 }))
         .send()
         .await
         .map_err(|error| format!("could not reach GitHub: {error}"))?;
@@ -140,7 +156,9 @@ async fn run(egui: &egui::Context) -> Result<Option<String>, String> {
         .iter()
         .find(|asset| asset.name.to_ascii_lowercase().ends_with(".exe"))
         .ok_or_else(|| format!("{} has no exe attached", release.tag_name))?;
-    set(Status::Downloading(release.tag_name.clone()), egui);
+    if let Some(egui) = egui {
+        set(Status::Downloading(release.tag_name.clone()), egui);
+    }
     let bytes = client
         .get(&asset.browser_download_url)
         .send()
@@ -155,6 +173,11 @@ async fn run(egui: &egui::Context) -> Result<Option<String>, String> {
         return Err("the download is not a Windows program".to_string());
     }
     let exe = std::env::current_exe().map_err(|error| error.to_string())?;
+    // The same exe under a newer tag (a release whose version was not set):
+    // installing it would only repeat on every check.
+    if std::fs::read(&exe).is_ok_and(|current| current == bytes.as_ref()) {
+        return Ok(None);
+    }
     let new = exe.with_extension("exe.new");
     std::fs::write(&new, &bytes).map_err(|error| format!("could not save the update: {error}"))?;
     let old = old_path(&exe);
