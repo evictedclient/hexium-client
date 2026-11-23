@@ -3845,7 +3845,7 @@ impl App {
                     let bytes = endpoints::download_asset(&api, source_id)
                         .await
                         .map_err(|e| e.to_string())?;
-                    endpoints::upload_clothing(&api, &name, asset_type, price, bytes)
+                    endpoints::upload_clothing(&api, &name, asset_type, price, source_id, bytes)
                         .await
                         .map_err(|e| e.to_string())
                 }

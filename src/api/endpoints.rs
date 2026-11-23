@@ -742,49 +742,75 @@ pub async fn download_asset(client: &ApiClient, asset_id: u64) -> Result<Vec<u8>
         .await
 }
 
-/// Upload a clothing item to hexium. The endpoint is modelled from the classic
-/// Roblox 2016 upload path (`POST /asset/`) — not observed in the traffic
-/// capture; adjust if the actual path or response format differs.
-/// Returns the new asset ID assigned by the server.
+/// Build a multipart/form-data body by hand (no reqwest multipart feature needed).
+fn build_multipart(
+    boundary: &str,
+    name: &str,
+    asset_type_id: u8,
+    source_asset_id: u64,
+    image_bytes: &[u8],
+) -> Vec<u8> {
+    let img_ct = if image_bytes.starts_with(b"\xff\xd8") { "image/jpeg" } else { "image/png" };
+    let img_ext = if img_ct == "image/jpeg" { "jpg" } else { "png" };
+    let sep = format!("--{boundary}\r\n");
+    let end = format!("--{boundary}--\r\n");
+    let mut body: Vec<u8> = Vec::new();
+
+    body.extend_from_slice(sep.as_bytes());
+    body.extend_from_slice(b"Content-Disposition: form-data; name=\"name\"\r\n\r\n");
+    body.extend_from_slice(name.as_bytes());
+    body.extend_from_slice(b"\r\n");
+
+    body.extend_from_slice(sep.as_bytes());
+    body.extend_from_slice(b"Content-Disposition: form-data; name=\"assetType\"\r\n\r\n");
+    body.extend_from_slice(asset_type_id.to_string().as_bytes());
+    body.extend_from_slice(b"\r\n");
+
+    body.extend_from_slice(sep.as_bytes());
+    body.extend_from_slice(
+        format!(
+            "Content-Disposition: form-data; name=\"file\"; filename=\"{source_asset_id}.{img_ext}\"\r\nContent-Type: {img_ct}\r\n\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(image_bytes);
+    body.extend_from_slice(b"\r\n");
+
+    body.extend_from_slice(end.as_bytes());
+    body
+}
+
+/// Upload a clothing item to hexium via `create.hexium.wtf/develop/upload`
+/// (observed multipart/form-data endpoint). Returns the new asset ID.
+/// Note: pricing is not part of the upload; `price` is reserved for a
+/// future set-price call once that endpoint is identified.
 pub async fn upload_clothing(
     client: &ApiClient,
     name: &str,
     asset_type_id: u8,
-    price: u64,
+    _price: u64,
+    source_asset_id: u64,
     image_bytes: Vec<u8>,
 ) -> Result<u64> {
-    let query: &[(&str, String)] = &[
-        ("name", name.to_string()),
-        ("assetTypeId", asset_type_id.to_string()),
-        ("allowComments", "True".to_string()),
-        ("isPublic", "True".to_string()),
-        ("isForSale", if price > 0 { "True" } else { "False" }.to_string()),
-        ("priceInRobux", price.to_string()),
-    ];
-    let content_type = if image_bytes.starts_with(b"\xff\xd8") {
-        "image/jpeg"
-    } else {
-        "image/png"
-    };
+    let boundary = "----HexiumClientBoundaryABCD1234";
+    let body = build_multipart(boundary, name, asset_type_id, source_asset_id, &image_bytes);
+    let content_type = format!("multipart/form-data; boundary={boundary}");
+
     let text = client
-        .post_bytes_text("/asset/", query, content_type, image_bytes)
+        .post_multipart_to(
+            "https://create.hexium.wtf/develop/upload",
+            &content_type,
+            body,
+        )
         .await?;
 
-    // Try JSON: {"AssetId": 12345} or {"assetId": 12345}
+    // Try JSON: {"assetId": 12345} or {"AssetId": 12345} or {"id": 12345}
     if let Ok(value) = serde_json::from_str::<Value>(&text) {
-        if let Some(id) = value
-            .get("AssetId")
-            .or_else(|| value.get("assetId"))
-            .and_then(Value::as_u64)
-        {
-            return Ok(id);
+        for key in &["assetId", "AssetId", "id"] {
+            if let Some(id) = value.get(*key).and_then(Value::as_u64) {
+                return Ok(id);
+            }
         }
-    }
-    // Legacy text: "Asset ID: 12345"
-    let lower = text.trim().to_ascii_lowercase();
-    let stripped = lower.trim_start_matches("asset id:").trim();
-    if let Ok(id) = stripped.parse::<u64>() {
-        return Ok(id);
     }
     // Plain number
     if let Ok(id) = text.trim().parse::<u64>() {

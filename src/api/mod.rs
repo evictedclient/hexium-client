@@ -426,6 +426,64 @@ impl ApiClient {
         serde_json::from_str(&text).map_err(|_| ApiError::Parse(snippet(&text)))
     }
 
+    /// POST a pre-built multipart/form-data body to a full URL (not proxied through
+    /// the hexium origin). Applies the same cookie + CSRF headers and retry logic
+    /// as `send`. Returns the raw response body as text.
+    pub async fn post_multipart_to(
+        &self,
+        url: &str,
+        content_type: &str,
+        body: Vec<u8>,
+    ) -> Result<String> {
+        let mut csrf_retry = true;
+        loop {
+            let mut request = self
+                .http
+                .post(url)
+                .header("user-agent", USER_AGENT)
+                .header("accept", "application/json, text/plain, */*")
+                .header("content-type", content_type)
+                .body(body.clone());
+            if let Some(cookie) = self.cookie_header() {
+                request = request.header("cookie", cookie);
+            }
+            if let Some(token) = self.csrf_token() {
+                request = request.header("x-csrf-token", token);
+            }
+            let response = request
+                .send()
+                .await
+                .map_err(|error| ApiError::Network(error.to_string()))?;
+            let status = response.status();
+            let fresh_token = response
+                .headers()
+                .get("x-csrf-token")
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(|token| !token.is_empty());
+            self.absorb(response.headers());
+            let text = response
+                .text()
+                .await
+                .map_err(|error| ApiError::Network(error.to_string()))?;
+            if status == StatusCode::FORBIDDEN && csrf_retry && fresh_token {
+                csrf_retry = false;
+                continue;
+            }
+            if status.is_success() {
+                return Ok(text);
+            }
+            match classify(status, &text) {
+                Err(error) => {
+                    if matches!(error, ApiError::Auth(_)) {
+                        self.last_auth_status.store(status.as_u16(), Ordering::Relaxed);
+                    }
+                    return Err(error);
+                }
+                Ok(_) => return Ok(text),
+            }
+        }
+    }
+
     /// POST with raw bytes instead of JSON (used for clothing upload). Applies
     /// the same CSRF retry and auth-status recording as `send`. Returns the raw
     /// response body as text — the caller parses it, since upload responses can
