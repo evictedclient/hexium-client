@@ -619,9 +619,9 @@ pub async fn navigation_menu(client: &ApiClient) -> Result<Vec<(String, String)>
 // Group clothing scrape + upload
 // ---------------------------------------------------------------------------
 
-/// Fetch all clothing items (T-Shirts, Shirts, Pants) uploaded by a group.
-/// Paginates the catalog search and enriches with full item details.
-/// Capped at 500 items to prevent runaway loops.
+/// Fetch all clothing items (T-Shirts, Shirts, Pants) uploaded by a Roblox group,
+/// using Roblox's public catalog API directly. Paginates and enriches with full
+/// item details and thumbnail URLs. Capped at 500 items.
 pub async fn group_clothing(
     client: &ApiClient,
     group_id: u64,
@@ -641,7 +641,7 @@ pub async fn group_clothing(
             q.push(("cursor", cursor.clone()));
         }
         let value = client
-            .get_query(&api("catalog", "/v1/search/items"), &q)
+            .get_json_url("https://catalog.roblox.com/v1/search/items", &q)
             .await?;
         let page: Vec<CatalogItem> = first_array(&value, &["data"])
             .iter()
@@ -660,15 +660,27 @@ pub async fn group_clothing(
         }
     }
 
-    // Enrich stubs with full detail (name, assetType, price…)
+    // Enrich stubs with full detail via Roblox's catalog/items/details
     let ids: Vec<u64> = all_stubs.iter().map(|s| s.id).collect();
     let mut detail_map: HashMap<u64, CatalogItem> = HashMap::new();
     for chunk in ids.chunks(120) {
-        if let Ok(batch) = catalog_details(client, chunk).await {
-            for item in batch {
-                if item.id != 0 {
-                    detail_map.insert(item.id, item);
-                }
+        let items_body: Vec<Value> = chunk
+            .iter()
+            .map(|id| json!({ "itemType": "Asset", "id": id }))
+            .collect();
+        if let Ok(value) = client
+            .post_json_url(
+                "https://catalog.roblox.com/v1/catalog/items/details",
+                json!({ "items": items_body }),
+            )
+            .await
+        {
+            for item in first_array(&value, &["data"])
+                .iter()
+                .map(CatalogItem::from_value)
+                .filter(|item| item.id != 0)
+            {
+                detail_map.insert(item.id, item);
             }
         }
     }
@@ -685,15 +697,48 @@ pub async fn group_clothing(
         })
         .collect();
 
+    // Thumbnails from Roblox's thumbnail API
     let icon_ids: Vec<u64> = items.iter().map(|item| item.id).collect();
-    let icons = asset_icons(client, &icon_ids).await.unwrap_or_default();
+    let icons = roblox_asset_icons(client, &icon_ids).await.unwrap_or_default();
     Ok((items, icons))
 }
 
-/// Download raw asset bytes from `/asset/?id={asset_id}`.
+/// Thumbnails for asset IDs from Roblox's public thumbnails API.
+async fn roblox_asset_icons(
+    client: &ApiClient,
+    ids: &[u64],
+) -> Result<HashMap<u64, String>> {
+    let mut map = HashMap::new();
+    for chunk in ids.chunks(100) {
+        let pairs: Vec<(&str, String)> = vec![
+            ("assetIds", chunk.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(",")),
+            ("size", "110x110".to_string()),
+            ("format", "Png".to_string()),
+            ("isCircular", "false".to_string()),
+        ];
+        if let Ok(value) = client
+            .get_json_url("https://thumbnails.roblox.com/v1/assets", &pairs)
+            .await
+        {
+            for item in first_array(&value, &["data"]) {
+                let id = item.get("targetId").and_then(Value::as_u64).unwrap_or(0);
+                let url = str_at(item, "imageUrl");
+                if id != 0 && !url.is_empty() {
+                    map.insert(id, url);
+                }
+            }
+        }
+    }
+    Ok(map)
+}
+
+/// Download raw clothing template bytes from Roblox's asset delivery CDN.
 pub async fn download_asset(client: &ApiClient, asset_id: u64) -> Result<Vec<u8>> {
     client
-        .fetch_image(&format!("{}/asset/?id={}", client.origin(), asset_id))
+        .fetch_image(&format!(
+            "https://assetdelivery.roblox.com/v1/asset/?id={}",
+            asset_id
+        ))
         .await
 }
 

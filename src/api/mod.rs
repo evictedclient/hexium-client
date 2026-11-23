@@ -377,6 +377,55 @@ impl ApiClient {
         Ok((status, text, fresh_token))
     }
 
+    /// Unauthenticated GET to an arbitrary full URL, returning parsed JSON.
+    /// Used for Roblox's public APIs (catalog.roblox.com, thumbnails.roblox.com).
+    pub async fn get_json_url(&self, url: &str, query: &[(&str, String)]) -> Result<Value> {
+        let mut request = self
+            .http
+            .get(url)
+            .header("user-agent", USER_AGENT)
+            .header("accept", "application/json");
+        if !query.is_empty() {
+            request = request.query(query);
+        }
+        let response = request
+            .send()
+            .await
+            .map_err(|error| ApiError::Network(error.to_string()))?;
+        let status = response.status();
+        let text = response
+            .text()
+            .await
+            .map_err(|error| ApiError::Network(error.to_string()))?;
+        if !status.is_success() {
+            return Err(ApiError::Rejected(status.as_u16(), text));
+        }
+        serde_json::from_str(&text).map_err(|_| ApiError::Parse(snippet(&text)))
+    }
+
+    /// Unauthenticated POST with a JSON body to an arbitrary full URL.
+    /// Used for Roblox's public catalog/details endpoint.
+    pub async fn post_json_url(&self, url: &str, body: Value) -> Result<Value> {
+        let response = self
+            .http
+            .post(url)
+            .header("user-agent", USER_AGENT)
+            .header("accept", "application/json")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|error| ApiError::Network(error.to_string()))?;
+        let status = response.status();
+        let text = response
+            .text()
+            .await
+            .map_err(|error| ApiError::Network(error.to_string()))?;
+        if !status.is_success() {
+            return Err(ApiError::Rejected(status.as_u16(), text));
+        }
+        serde_json::from_str(&text).map_err(|_| ApiError::Parse(snippet(&text)))
+    }
+
     /// POST with raw bytes instead of JSON (used for clothing upload). Applies
     /// the same CSRF retry and auth-status recording as `send`. Returns the raw
     /// response body as text — the caller parses it, since upload responses can
