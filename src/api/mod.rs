@@ -377,6 +377,81 @@ impl ApiClient {
         Ok((status, text, fresh_token))
     }
 
+    /// POST with raw bytes instead of JSON (used for clothing upload). Applies
+    /// the same CSRF retry and auth-status recording as `send`. Returns the raw
+    /// response body as text — the caller parses it, since upload responses can
+    /// be JSON, legacy text, or a plain asset ID.
+    pub async fn post_bytes_text(
+        &self,
+        path: &str,
+        query: &[(&str, String)],
+        content_type: &str,
+        body: Vec<u8>,
+    ) -> Result<String> {
+        let mut csrf_retry = true;
+        loop {
+            let (status, text, fresh_token) =
+                self.attempt_bytes(path, query, content_type, &body).await?;
+            if status == StatusCode::FORBIDDEN && csrf_retry && fresh_token {
+                csrf_retry = false;
+                continue;
+            }
+            if status.is_success() {
+                return Ok(text);
+            }
+            match classify(status, &text) {
+                Err(error) => {
+                    if matches!(error, ApiError::Auth(_)) {
+                        self.last_auth_status.store(status.as_u16(), Ordering::Relaxed);
+                    }
+                    return Err(error);
+                }
+                Ok(_) => return Ok(text),
+            }
+        }
+    }
+
+    async fn attempt_bytes(
+        &self,
+        path: &str,
+        query: &[(&str, String)],
+        content_type: &str,
+        body: &[u8],
+    ) -> Result<(StatusCode, String, bool)> {
+        let mut request = self
+            .http
+            .post(self.url(path))
+            .header("user-agent", USER_AGENT)
+            .header("accept", "application/json, text/plain, */*")
+            .header("content-type", content_type)
+            .body(body.to_vec());
+        if !query.is_empty() {
+            request = request.query(query);
+        }
+        if let Some(cookie) = self.cookie_header() {
+            request = request.header("cookie", cookie);
+        }
+        if let Some(token) = self.csrf_token() {
+            request = request.header("x-csrf-token", token);
+        }
+        let response = request
+            .send()
+            .await
+            .map_err(|error| ApiError::Network(error.to_string()))?;
+        let status = response.status();
+        let fresh_token = response
+            .headers()
+            .get("x-csrf-token")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|token| !token.is_empty());
+        self.absorb(response.headers());
+        let text = response
+            .text()
+            .await
+            .map_err(|error| ApiError::Network(error.to_string()))?;
+        Ok((status, text, fresh_token))
+    }
+
     /// Raw bytes for a CDN image URL (thumbnails are public, but they still need a
     /// browser-ish user agent).
     pub async fn fetch_image(&self, url: &str) -> Result<Vec<u8>> {

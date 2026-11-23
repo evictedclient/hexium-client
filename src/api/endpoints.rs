@@ -616,6 +616,142 @@ pub async fn navigation_menu(client: &ApiClient) -> Result<Vec<(String, String)>
 }
 
 // ---------------------------------------------------------------------------
+// Group clothing scrape + upload
+// ---------------------------------------------------------------------------
+
+/// Fetch all clothing items (T-Shirts, Shirts, Pants) uploaded by a group.
+/// Paginates the catalog search and enriches with full item details.
+/// Capped at 500 items to prevent runaway loops.
+pub async fn group_clothing(
+    client: &ApiClient,
+    group_id: u64,
+) -> Result<(Vec<CatalogItem>, HashMap<u64, String>)> {
+    let base: Vec<(&str, String)> = vec![
+        ("category", "Clothing".to_string()),
+        ("creatorType", "Group".to_string()),
+        ("creatorTargetId", group_id.to_string()),
+        ("limit", "120".to_string()),
+        ("sortType", "Updated".to_string()),
+    ];
+    let mut all_stubs: Vec<CatalogItem> = Vec::new();
+    let mut cursor = String::new();
+    loop {
+        let mut q = base.clone();
+        if !cursor.is_empty() {
+            q.push(("cursor", cursor.clone()));
+        }
+        let value = client
+            .get_query(&api("catalog", "/v1/search/items"), &q)
+            .await?;
+        let page: Vec<CatalogItem> = first_array(&value, &["data"])
+            .iter()
+            .map(CatalogItem::from_value)
+            .filter(|item| item.id != 0)
+            .collect();
+        all_stubs.extend(page);
+        cursor = value
+            .get("nextPageCursor")
+            .and_then(Value::as_str)
+            .filter(|c| !c.is_empty())
+            .map(str::to_string)
+            .unwrap_or_default();
+        if cursor.is_empty() || all_stubs.len() >= 500 {
+            break;
+        }
+    }
+
+    // Enrich stubs with full detail (name, assetType, price…)
+    let ids: Vec<u64> = all_stubs.iter().map(|s| s.id).collect();
+    let mut detail_map: HashMap<u64, CatalogItem> = HashMap::new();
+    for chunk in ids.chunks(120) {
+        if let Ok(batch) = catalog_details(client, chunk).await {
+            for item in batch {
+                if item.id != 0 {
+                    detail_map.insert(item.id, item);
+                }
+            }
+        }
+    }
+    let items: Vec<CatalogItem> = all_stubs
+        .into_iter()
+        .map(|stub| match detail_map.remove(&stub.id) {
+            Some(mut full) => {
+                if full.item_type.is_empty() {
+                    full.item_type = stub.item_type;
+                }
+                full
+            }
+            None => stub,
+        })
+        .collect();
+
+    let icon_ids: Vec<u64> = items.iter().map(|item| item.id).collect();
+    let icons = asset_icons(client, &icon_ids).await.unwrap_or_default();
+    Ok((items, icons))
+}
+
+/// Download raw asset bytes from `/asset/?id={asset_id}`.
+pub async fn download_asset(client: &ApiClient, asset_id: u64) -> Result<Vec<u8>> {
+    client
+        .fetch_image(&format!("{}/asset/?id={}", client.origin(), asset_id))
+        .await
+}
+
+/// Upload a clothing item to hexium. The endpoint is modelled from the classic
+/// Roblox 2016 upload path (`POST /asset/`) — not observed in the traffic
+/// capture; adjust if the actual path or response format differs.
+/// Returns the new asset ID assigned by the server.
+pub async fn upload_clothing(
+    client: &ApiClient,
+    name: &str,
+    asset_type_id: u8,
+    price: u64,
+    image_bytes: Vec<u8>,
+) -> Result<u64> {
+    let query: &[(&str, String)] = &[
+        ("name", name.to_string()),
+        ("assetTypeId", asset_type_id.to_string()),
+        ("allowComments", "True".to_string()),
+        ("isPublic", "True".to_string()),
+        ("isForSale", if price > 0 { "True" } else { "False" }.to_string()),
+        ("priceInRobux", price.to_string()),
+    ];
+    let content_type = if image_bytes.starts_with(b"\xff\xd8") {
+        "image/jpeg"
+    } else {
+        "image/png"
+    };
+    let text = client
+        .post_bytes_text("/asset/", query, content_type, image_bytes)
+        .await?;
+
+    // Try JSON: {"AssetId": 12345} or {"assetId": 12345}
+    if let Ok(value) = serde_json::from_str::<Value>(&text) {
+        if let Some(id) = value
+            .get("AssetId")
+            .or_else(|| value.get("assetId"))
+            .and_then(Value::as_u64)
+        {
+            return Ok(id);
+        }
+    }
+    // Legacy text: "Asset ID: 12345"
+    let lower = text.trim().to_ascii_lowercase();
+    let stripped = lower.trim_start_matches("asset id:").trim();
+    if let Ok(id) = stripped.parse::<u64>() {
+        return Ok(id);
+    }
+    // Plain number
+    if let Ok(id) = text.trim().parse::<u64>() {
+        return Ok(id);
+    }
+    Err(super::ApiError::Parse(format!(
+        "unexpected upload response: {}",
+        &text[..text.len().min(200)]
+    )))
+}
+
+// ---------------------------------------------------------------------------
 // Avatar, inventory, groups, badges, events
 // ---------------------------------------------------------------------------
 

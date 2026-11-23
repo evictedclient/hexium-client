@@ -9,6 +9,7 @@ pub mod analyze;
 pub mod avatar;
 pub mod bot;
 pub mod catalog;
+pub mod clothing_uploader;
 pub mod chart;
 pub mod chat;
 pub mod market;
@@ -867,6 +868,7 @@ pub fn chrome(app: &mut App, cx: &Ctx, ctx: &egui::Context) {
                                 View::Bot => bot::show(app, cx, ui),
                                 View::Trades => trades::show(app, cx, ui),
                                 View::Settings => settings::show(app, cx, ui),
+                                View::Clothing => clothing_uploader::show(app, cx, ui),
                             }
                             ui.add_space(36.0);
                         });
@@ -942,7 +944,7 @@ pub const NAV_GROUPS: [(&str, &[View]); 5] = [
     ("You", &[View::Profile, View::Avatar, View::Inventory, View::Money]),
     ("Play", &[View::Games, View::Catalog, View::Market]),
     ("Social", &[View::Friends, View::Chat, View::Messages, View::Trades, View::Helpers, View::Bot, View::Groups]),
-    ("App", &[View::Settings]),
+    ("App", &[View::Settings, View::Clothing]),
 ];
 
 pub fn nav_views() -> Vec<View> {

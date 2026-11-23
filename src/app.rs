@@ -34,10 +34,11 @@ pub enum View {
     Bot,
     Trades,
     Settings,
+    Clothing,
 }
 
 impl View {
-    pub const ALL: [View; 16] = [
+    pub const ALL: [View; 17] = [
         View::Home,
         View::Games,
         View::Catalog,
@@ -54,6 +55,7 @@ impl View {
         View::Bot,
         View::Trades,
         View::Settings,
+        View::Clothing,
     ];
 
     pub fn label(self) -> &'static str {
@@ -74,6 +76,7 @@ impl View {
             View::Bot => "Trade bot",
             View::Trades => "Trades",
             View::Settings => "Settings",
+            View::Clothing => "Clothing upload",
         }
     }
 }
@@ -187,6 +190,12 @@ pub enum Msg {
     ActivityChanged,
     /// The trade bot sent a trade to this player.
     BotSent(u64),
+    /// Group clothing search finished.
+    GroupClothing(Res<(Vec<models::CatalogItem>, HashMap<u64, String>)>),
+    /// An item in the clothing upload queue is now being processed.
+    ClothingUploadWorking(u64),
+    /// A clothing item upload finished: source asset id and new hexium id or error.
+    ClothingUploaded { source_id: u64, result: Res<u64> },
 }
 
 /// Something that changes the signed-in account. Nothing here is sent until the
@@ -982,6 +991,34 @@ pub struct MarketState {
     pub changes_read_at: Option<Instant>,
 }
 
+/// Per-item state inside the clothing upload queue.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum ClothingUploadStatus {
+    #[default]
+    Pending,
+    Working,
+    Done(u64),
+    Failed(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct ClothingUploadItem {
+    pub source_id: u64,
+    pub name: String,
+    /// Roblox asset type ID: 2 = T-Shirt, 11 = Shirt, 12 = Pants.
+    pub asset_type: u8,
+    pub status: ClothingUploadStatus,
+}
+
+#[derive(Default)]
+pub struct ClothingUploaderState {
+    pub group_id_input: String,
+    pub items: Load<(Vec<models::CatalogItem>, HashMap<u64, String>)>,
+    pub price_input: String,
+    pub upload_queue: Vec<ClothingUploadItem>,
+    pub uploading: bool,
+}
+
 /// Who the open chat is with: an existing conversation, or a friend you have
 /// not chatted with yet (the conversation is started with the first message).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1101,6 +1138,8 @@ pub struct App {
     pub mass: Option<MassStatus>,
     /// The trade bot (idle until started).
     pub bot: Arc<crate::bot::Shared>,
+    /// Group clothing scrape + bulk upload tool.
+    pub clothing: ClothingUploaderState,
     /// Ctrl+F: the current screen's search box takes the keyboard.
     pub focus_search: bool,
     /// Text size last applied (so egui's own Ctrl +/- zoom is not undone).
@@ -1184,6 +1223,7 @@ impl App {
             quitting: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             hwnd: Arc::new(AtomicIsize::new(0)),
             mass: None,
+            clothing: ClothingUploaderState::default(),
             focus_search: false,
             applied_scale: 0.0,
             refreshed_at: Instant::now(),
@@ -3676,6 +3716,11 @@ impl App {
                 }
             }
             View::Bot | View::Settings => {}
+            View::Clothing => {
+                self.clothing.items = Load::Idle;
+                self.clothing.upload_queue.clear();
+                self.clothing.uploading = false;
+            }
         }
         self.on_view_enter();
         self.load_banners();
@@ -3706,7 +3751,7 @@ impl App {
             View::Market => self.load_market(),
             View::Helpers | View::Bot => self.load_inventory(),
             View::Trades => self.load_trades(),
-            View::Settings => {}
+            View::Settings | View::Clothing => {}
         }
     }
 
@@ -3725,6 +3770,91 @@ impl App {
         self.session = Load::Idle;
         self.load_session();
         self.load_banners();
+    }
+
+    pub fn load_group_clothing(&mut self) {
+        if !self.clothing.items.is_idle() {
+            return;
+        }
+        let group_id: u64 = match self.clothing.group_id_input.trim().parse() {
+            Ok(id) if id > 0 => id,
+            _ => {
+                self.clothing.items = Load::Err("Enter a valid group ID.".to_string());
+                return;
+            }
+        };
+        self.clothing.items = Load::Busy;
+        self.clothing.upload_queue.clear();
+        let cx = self.cx();
+        let api = cx.api.clone();
+        cx.spawn(async move {
+            Msg::GroupClothing(
+                endpoints::group_clothing(&api, group_id)
+                    .await
+                    .map_err(|error| error.to_string()),
+            )
+        });
+    }
+
+    /// Populate the upload queue from the loaded items list and kick off uploads.
+    pub fn queue_all_clothing_uploads(&mut self) {
+        let items = match &self.clothing.items {
+            Load::Ready((items, _)) => items.clone(),
+            _ => return,
+        };
+        self.clothing.upload_queue.clear();
+        for item in &items {
+            let asset_type = match item.asset_type.as_str() {
+                "TShirt" | "T-Shirt" => 2u8,
+                "Shirt" => 11u8,
+                "Pants" => 12u8,
+                _ => 2u8,
+            };
+            self.clothing.upload_queue.push(ClothingUploadItem {
+                source_id: item.id,
+                name: item.name.clone(),
+                asset_type,
+                status: ClothingUploadStatus::Pending,
+            });
+        }
+        self.start_clothing_uploads();
+    }
+
+    pub fn start_clothing_uploads(&mut self) {
+        if self.clothing.uploading {
+            return;
+        }
+        let pending: Vec<(u64, String, u8)> = self.clothing.upload_queue
+            .iter()
+            .filter(|item| item.status == ClothingUploadStatus::Pending)
+            .map(|item| (item.source_id, item.name.clone(), item.asset_type))
+            .collect();
+        if pending.is_empty() {
+            return;
+        }
+        let price: u64 = self.clothing.price_input.trim().parse().unwrap_or(0);
+        self.clothing.uploading = true;
+        let api = self.api.clone();
+        let tx = self.tx.clone();
+        let egui = self.egui.clone();
+        self.rt.spawn(async move {
+            for (source_id, name, asset_type) in pending {
+                let _ = tx.send(Msg::ClothingUploadWorking(source_id));
+                egui.request_repaint();
+                let result = async {
+                    let bytes = endpoints::download_asset(&api, source_id)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    endpoints::upload_clothing(&api, &name, asset_type, price, bytes)
+                        .await
+                        .map_err(|e| e.to_string())
+                }
+                .await;
+                let _ = tx.send(Msg::ClothingUploaded { source_id, result });
+                egui.request_repaint();
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+        });
     }
 
     pub fn sign_out(&mut self) {
@@ -3759,6 +3889,7 @@ impl App {
         self.trades = TradesState::default();
         self.chat = ChatState::default();
         self.market = MarketState::default();
+        self.clothing = ClothingUploaderState::default();
         self.view = View::Home;
     }
 
@@ -4254,6 +4385,28 @@ impl App {
                 }
             }
             Msg::Probe(ok) => self.probe_result = Some(ok),
+            Msg::GroupClothing(result) => {
+                self.clothing.items = into_load(result);
+            }
+            Msg::ClothingUploadWorking(source_id) => {
+                if let Some(item) = self.clothing.upload_queue.iter_mut().find(|i| i.source_id == source_id) {
+                    item.status = ClothingUploadStatus::Working;
+                }
+            }
+            Msg::ClothingUploaded { source_id, result } => {
+                if let Some(item) = self.clothing.upload_queue.iter_mut().find(|i| i.source_id == source_id) {
+                    item.status = match result {
+                        Ok(new_id) => ClothingUploadStatus::Done(new_id),
+                        Err(error) => ClothingUploadStatus::Failed(error),
+                    };
+                }
+                let all_settled = self.clothing.upload_queue.iter().all(|i| {
+                    !matches!(i.status, ClothingUploadStatus::Pending | ClothingUploadStatus::Working)
+                });
+                if all_settled {
+                    self.clothing.uploading = false;
+                }
+            }
         }
     }
 }
