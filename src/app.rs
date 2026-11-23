@@ -3845,9 +3845,16 @@ impl App {
                     let bytes = endpoints::download_asset(&api, source_id)
                         .await
                         .map_err(|e| e.to_string())?;
-                    endpoints::upload_clothing(&api, &name, asset_type, price, source_id, bytes)
-                        .await
-                        .map_err(|e| e.to_string())
+                    let new_id = endpoints::upload_clothing(
+                        &api, &name, asset_type, price, source_id, bytes,
+                    )
+                    .await
+                    .map_err(|e| e.to_string())?;
+                    if price > 0 {
+                        // Best-effort: a pricing failure doesn't fail the upload.
+                        let _ = endpoints::set_asset_price(&api, new_id, price).await;
+                    }
+                    Ok::<u64, String>(new_id)
                 }
                 .await;
                 let _ = tx.send(Msg::ClothingUploaded { source_id, result });

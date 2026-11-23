@@ -732,6 +732,21 @@ async fn roblox_asset_icons(
     Ok(map)
 }
 
+/// Set the sale price of an asset already on hexium.
+/// `POST /apisite/itemconfiguration/v1/assets/{id}/update-price`
+pub async fn set_asset_price(client: &ApiClient, asset_id: u64, price_robux: u64) -> Result<()> {
+    client
+        .post(
+            &api(
+                "itemconfiguration",
+                &format!("/v1/assets/{asset_id}/update-price"),
+            ),
+            Some(json!({ "priceInRobux": price_robux, "priceInTickets": 0 })),
+        )
+        .await?;
+    Ok(())
+}
+
 /// Download raw clothing template bytes from Roblox's asset delivery CDN.
 pub async fn download_asset(client: &ApiClient, asset_id: u64) -> Result<Vec<u8>> {
     client
