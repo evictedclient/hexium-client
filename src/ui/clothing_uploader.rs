@@ -22,7 +22,7 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
         let entered = response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
         let busy = !app.clothing.items.is_idle();
         if (primary_button(ui, "Find Clothing").clicked() || entered) && !busy {
-            app.clothing.items = Load::Idle; // allow re-searching the same group
+            app.clothing.items = Load::Idle;
             app.load_group_clothing();
         }
         if matches!(app.clothing.items, Load::Busy) {
@@ -32,8 +32,6 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
 
     ui.add_space(8.0);
 
-    // Clone out the loaded data so we can pass it without holding an immutable
-    // borrow alongside the mutable `app` refs below.
     let loaded = match &app.clothing.items {
         Load::Idle => return,
         Load::Busy => return,
@@ -61,7 +59,22 @@ fn show_items(
         return;
     }
 
-    muted(ui, &format!("{} items found", items.len()));
+    let total = items.len();
+    let n_selected = items.iter().filter(|i| app.clothing.selected_ids.contains(&i.id)).count();
+
+    // Header row: count + Select All / Deselect All
+    ui.horizontal(|ui| {
+        muted(ui, &format!("{total} items — {n_selected} selected"));
+        ui.add_space(8.0);
+        if ui.small_button("Select all").clicked() {
+            for item in &items {
+                app.clothing.selected_ids.insert(item.id);
+            }
+        }
+        if ui.small_button("Deselect all").clicked() {
+            app.clothing.selected_ids.clear();
+        }
+    });
     ui.add_space(8.0);
 
     // Price + upload controls
@@ -84,18 +97,10 @@ fn show_items(
             ui.add(egui::Spinner::new().size(14.0).color(accent()));
             muted(ui, "Uploading…");
         } else if all_settled {
-            let ok = app
-                .clothing
-                .upload_queue
-                .iter()
-                .filter(|i| matches!(i.status, ClothingUploadStatus::Done(_)))
-                .count();
-            let fail = app
-                .clothing
-                .upload_queue
-                .iter()
-                .filter(|i| matches!(i.status, ClothingUploadStatus::Failed(_)))
-                .count();
+            let ok = app.clothing.upload_queue.iter()
+                .filter(|i| matches!(i.status, ClothingUploadStatus::Done(_))).count();
+            let fail = app.clothing.upload_queue.iter()
+                .filter(|i| matches!(i.status, ClothingUploadStatus::Failed(_))).count();
             ui.label(
                 RichText::new(format!("{ok} uploaded, {fail} failed"))
                     .color(if fail > 0 { DANGER } else { GREEN })
@@ -109,8 +114,12 @@ fn show_items(
                 }
                 app.start_clothing_uploads();
             }
-        } else if primary_button(ui, "Upload All").clicked() {
-            app.queue_all_clothing_uploads();
+        } else if n_selected > 0 {
+            if primary_button(ui, &format!("Upload {n_selected}")).clicked() {
+                app.queue_all_clothing_uploads();
+            }
+        } else {
+            muted(ui, "Select items to upload");
         }
     });
 
@@ -122,16 +131,29 @@ fn show_items(
             wrap(ui, |ui| {
                 for item in &items {
                     let icon_url = icons.get(&item.id).cloned();
-                    let status = app
-                        .clothing
-                        .upload_queue
-                        .iter()
+                    let status = app.clothing.upload_queue.iter()
                         .find(|i| i.source_id == item.id)
                         .map(|i| i.status.clone());
+                    let uploading = app.clothing.uploading;
 
                     tile(ui, 240.0, |ui| {
                         ui.horizontal(|ui| {
+                            // Checkbox (disabled while uploading)
+                            let mut checked = app.clothing.selected_ids.contains(&item.id);
+                            let cb = ui.add_enabled(
+                                !uploading,
+                                egui::Checkbox::new(&mut checked, ""),
+                            );
+                            if cb.changed() {
+                                if checked {
+                                    app.clothing.selected_ids.insert(item.id);
+                                } else {
+                                    app.clothing.selected_ids.remove(&item.id);
+                                }
+                            }
+
                             app.thumbs.show(ui, cx, icon_url.as_deref(), egui::vec2(42.0, 42.0));
+
                             ui.vertical(|ui| {
                                 ui.label(RichText::new(&item.name).size(13.0).color(INK));
                                 let type_label = match item.asset_type.as_str() {

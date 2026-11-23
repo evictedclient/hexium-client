@@ -1,7 +1,7 @@
 //! Application state: one screen per message, all network work on a tokio runtime,
 //! results drained on the UI thread each frame.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::Arc;
@@ -1017,6 +1017,8 @@ pub struct ClothingUploaderState {
     pub price_input: String,
     pub upload_queue: Vec<ClothingUploadItem>,
     pub uploading: bool,
+    /// IDs the user has ticked for upload; auto-filled with all IDs on each search.
+    pub selected_ids: HashSet<u64>,
 }
 
 /// Who the open chat is with: an existing conversation, or a friend you have
@@ -3796,7 +3798,7 @@ impl App {
         });
     }
 
-    /// Populate the upload queue from the loaded items list and kick off uploads.
+    /// Populate the upload queue from the selected items and kick off uploads.
     pub fn queue_all_clothing_uploads(&mut self) {
         let items = match &self.clothing.items {
             Load::Ready((items, _)) => items.clone(),
@@ -3804,6 +3806,9 @@ impl App {
         };
         self.clothing.upload_queue.clear();
         for item in &items {
+            if !self.clothing.selected_ids.contains(&item.id) {
+                continue;
+            }
             let asset_type = match item.asset_type.as_str() {
                 "TShirt" | "T-Shirt" => 2u8,
                 "Shirt" => 11u8,
@@ -4394,6 +4399,9 @@ impl App {
             Msg::Probe(ok) => self.probe_result = Some(ok),
             Msg::GroupClothing(result) => {
                 self.clothing.items = into_load(result);
+                if let Load::Ready((items, _)) = &self.clothing.items {
+                    self.clothing.selected_ids = items.iter().map(|i| i.id).collect();
+                }
             }
             Msg::ClothingUploadWorking(source_id) => {
                 if let Some(item) = self.clothing.upload_queue.iter_mut().find(|i| i.source_id == source_id) {
