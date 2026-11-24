@@ -13,6 +13,7 @@ mod instance;
 mod notify;
 mod play;
 mod pricewatch;
+mod resale;
 mod shortcut;
 mod tray;
 mod ui;

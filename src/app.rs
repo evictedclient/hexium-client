@@ -32,13 +32,14 @@ pub enum View {
     Market,
     Helpers,
     Bot,
+    Resale,
     Trades,
     Settings,
     Clothing,
 }
 
 impl View {
-    pub const ALL: [View; 17] = [
+    pub const ALL: [View; 18] = [
         View::Home,
         View::Games,
         View::Catalog,
@@ -53,6 +54,7 @@ impl View {
         View::Market,
         View::Helpers,
         View::Bot,
+        View::Resale,
         View::Trades,
         View::Settings,
         View::Clothing,
@@ -74,6 +76,7 @@ impl View {
             View::Market => "Market",
             View::Helpers => "Trade helpers",
             View::Bot => "Trade bot",
+            View::Resale => "Resale bot",
             View::Trades => "Trades",
             View::Settings => "Settings",
             View::Clothing => "Clothing upload",
@@ -1140,6 +1143,8 @@ pub struct App {
     pub mass: Option<MassStatus>,
     /// The trade bot (idle until started).
     pub bot: Arc<crate::bot::Shared>,
+    /// The resale bot: lists your collectibles under the cheapest listing.
+    pub resale: Arc<crate::resale::Shared>,
     /// Group clothing scrape + bulk upload tool.
     pub clothing: ClothingUploaderState,
     /// Settings screen: temporary input for a new Roblox cookie.
@@ -1179,6 +1184,7 @@ impl App {
             egui: cc.egui_ctx.clone(),
             applied_theme: String::new(),
             bot: crate::bot::Shared::new(cfg.bot.clone(), cfg.player_filters),
+            resale: crate::resale::Shared::new(cfg.resale.clone()),
             cfg,
             thumbs: Thumbs::default(),
             view: View::Home,
@@ -2481,6 +2487,21 @@ impl App {
         crate::bot::start(self.bot.clone(), self.api.clone(), me, &self.rt, self.egui.clone(), self.tx.clone());
     }
 
+    /// Hands the resale bot your current settings and the trade bot's keep list.
+    pub fn sync_resale(&self) {
+        *self.resale.settings.lock().unwrap() = self.cfg.resale.clone();
+        *self.resale.keep.lock().unwrap() = self.cfg.bot.keep.iter().copied().collect();
+    }
+
+    pub fn start_resale_bot(&mut self) {
+        let Some(me) = self.me_id() else {
+            self.notice = Some((false, "Sign in before starting the resale bot.".to_string()));
+            return;
+        };
+        self.sync_resale();
+        crate::resale::start(self.resale.clone(), self.api.clone(), me, &self.rt, self.egui.clone());
+    }
+
     pub fn stop_mass_send(&mut self) {
         if let Some(mass) = &self.mass {
             mass.stop.store(true, Ordering::Relaxed);
@@ -3721,7 +3742,7 @@ impl App {
                     self.load_trade_detail(id);
                 }
             }
-            View::Bot | View::Settings => {}
+            View::Bot | View::Resale | View::Settings => {}
             View::Clothing => {
                 self.clothing.items = Load::Idle;
                 self.clothing.upload_queue.clear();
@@ -3757,7 +3778,7 @@ impl App {
             View::Market => self.load_market(),
             View::Helpers | View::Bot => self.load_inventory(),
             View::Trades => self.load_trades(),
-            View::Settings | View::Clothing => {}
+            View::Resale | View::Settings | View::Clothing => {}
         }
     }
 

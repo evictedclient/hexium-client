@@ -24,6 +24,7 @@ pub mod messages;
 pub mod money;
 pub mod player_card;
 pub mod profile;
+pub mod resale;
 pub mod settings;
 pub mod trade_builder;
 pub mod trades;
@@ -866,6 +867,7 @@ pub fn chrome(app: &mut App, cx: &Ctx, ctx: &egui::Context) {
                                 View::Market => market::show(app, cx, ui),
                                 View::Helpers => helpers::screen(app, cx, ui),
                                 View::Bot => bot::show(app, cx, ui),
+                                View::Resale => resale::show(app, cx, ui),
                                 View::Trades => trades::show(app, cx, ui),
                                 View::Settings => settings::show(app, cx, ui),
                                 View::Clothing => clothing_uploader::show(app, cx, ui),
@@ -943,7 +945,7 @@ pub const NAV_GROUPS: [(&str, &[View]); 5] = [
     ("", &[View::Home]),
     ("You", &[View::Profile, View::Avatar, View::Inventory, View::Money]),
     ("Play", &[View::Games, View::Catalog, View::Market]),
-    ("Social", &[View::Friends, View::Chat, View::Messages, View::Trades, View::Helpers, View::Bot, View::Groups]),
+    ("Social", &[View::Friends, View::Chat, View::Messages, View::Trades, View::Helpers, View::Bot, View::Resale, View::Groups]),
     ("App", &[View::Settings, View::Clothing]),
 ];
 

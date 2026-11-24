@@ -86,6 +86,12 @@ Not affiliated with hexium.wtf or Roblox.
   **Who to send to** filters apply to all of it: account age, how long they have held the
   item, online recently, skip people you already sent to (default 7 days), and the order
   (random by default, or newest / longest holders).
+- **Auto resale** (Resale bot, under Social): runs while the app is open and, each round,
+  reads your collectibles and sets every copy's price to one R$ under the cheapest other
+  listing — repricing a copy when someone undercuts it. Never below a floor price, with a
+  wait between listings, and an option to leave the Trade bot's kept items alone. Copies
+  of yours that are already the cheapest, and items nobody else is selling, are left as
+  they are. It only sets prices: it never buys and never takes a copy off sale.
 - **Your own values**: set a value on any limited; it replaces Heximons' (or adds one)
   everywhere values are used, and is labelled "Your value".
 - **Trade stats** over your last 40 completed trades, and an Owners list on every limited.

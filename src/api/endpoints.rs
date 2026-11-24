@@ -1286,9 +1286,12 @@ pub async fn resale_info(client: &ApiClient, me: u64, asset: u64, user_asset_id:
         client.get(&data_path),
     );
     let copies = copies?;
-    let my_price = first_array(&copies, &["data"])
+    // A copy absent from this list cannot be put on sale at all: `my_price` is
+    // also `None` for a resellable copy that is simply not listed.
+    let mine = first_array(&copies, &["data"])
         .iter()
-        .find(|copy| num_at(copy, "userAssetId") == user_asset_id)
+        .find(|copy| num_at(copy, "userAssetId") == user_asset_id);
+    let my_price = mine
         .map(|copy| num_at(copy, "price"))
         .filter(|price| *price > 0);
 
@@ -1313,6 +1316,7 @@ pub async fn resale_info(client: &ApiClient, me: u64, asset: u64, user_asset_id:
     let history = data.as_ref().ok().map(|data| ResaleData::from_value(asset, data));
     Ok(ResaleInfo {
         my_price,
+        resellable: mine.is_some(),
         lowest_other,
         other_sellers,
         sales,

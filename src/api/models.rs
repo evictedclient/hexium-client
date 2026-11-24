@@ -1020,6 +1020,8 @@ pub struct FriendRequestsBundle {
 pub struct ResaleInfo {
     /// Your asking price for this copy; `None` when it is not on sale.
     pub my_price: Option<u64>,
+    /// The site lists this copy as one that can be put on sale at all.
+    pub resellable: bool,
     /// Cheapest copy someone else is selling, if any.
     pub lowest_other: Option<u64>,
     /// How many other copies are on sale.

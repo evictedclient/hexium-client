@@ -7,6 +7,7 @@ use eframe::egui::{self, RichText, Ui};
 
 use crate::app::{App, TradeKind, MASS_MIN_GAP};
 use crate::bot::{self, BotTrade, LogKind};
+use crate::config::Split;
 use crate::ui::{self, accent, muted, Ctx, DANGER, GOLD, GREEN, MUTED};
 
 pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
@@ -132,12 +133,25 @@ fn settings_left(app: &mut App, ui: &mut Ui) {
     kind(ui, "Downgrades", "Give one big item for several smaller ones.", "Most items I get back", &mut bot.downgrades);
     ui.add_space(4.0);
     ui.horizontal(|ui| {
-        ui.label("Downgrade my top");
-        ui.add(egui::DragValue::new(&mut bot.top_items).range(1..=50));
+        ui.radio_value(&mut bot.split, Split::Top, "Downgrade my top");
+        ui.add_enabled(
+            bot.split == Split::Top,
+            egui::DragValue::new(&mut bot.top_items).range(1..=50),
+        );
         ui.label("items, upgrade the rest");
     })
     .response
     .on_hover_text("Downgrades only give away one of your most valuable items (after the keep list); upgrades give items from everything below them.");
+    ui.horizontal(|ui| {
+        ui.radio_value(&mut bot.split, Split::Value, "Upgrade under");
+        ui.add_enabled(
+            bot.split == Split::Value,
+            egui::DragValue::new(&mut bot.upgrade_to).range(1..=100_000_000).suffix(" R$"),
+        );
+        ui.label("value, downgrade the rest");
+    })
+    .response
+    .on_hover_text("Splits your items by what the bot counts each one at: Heximons value, moved by the demand, sales and price settings above, and capped at the cheapest listing. Items worth less than the value are upgraded; items at or over it are given in downgrades.");
     ui.add_enabled_ui(bot.upgrades.on && bot.downgrades.on, |ui| {
         ui.horizontal(|ui| {
             ui.label("Upgrades are");

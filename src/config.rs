@@ -79,6 +79,9 @@ pub struct Config {
     /// The trade bot.
     #[serde(default)]
     pub bot: BotConfig,
+    /// The resale bot.
+    #[serde(default)]
+    pub resale: ResaleConfig,
     /// Install new releases from GitHub on their own.
     #[serde(default = "default_true")]
     pub auto_update: bool,
@@ -156,6 +159,7 @@ impl Default for Config {
             compact: false,
             shortcut_exe: None,
             bot: BotConfig::default(),
+            resale: ResaleConfig::default(),
             auto_update: true,
             roblox_cookie: None,
         }
@@ -304,6 +308,20 @@ impl Default for KindSettings {
     }
 }
 
+/// How the trade bot divides your items between upgrades and downgrades.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum Split {
+    /// Downgrade your `top_items` most valuable items; upgrade everything below.
+    #[default]
+    Top,
+    /// Upgrade items worth under `upgrade_to`; downgrade everything at or over it.
+    Value,
+}
+
+fn default_upgrade_to() -> u64 {
+    1_000
+}
+
 /// The trade bot's settings (Trade bot screen).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -317,6 +335,14 @@ pub struct BotConfig {
     /// Downgrades give from your this-many most valuable items; upgrades
     /// give from everything below them.
     pub top_items: usize,
+    /// How upgrades and downgrades split your items: by position (`Top`) or
+    /// by what each item is worth (`Value`).
+    #[serde(default)]
+    pub split: Split,
+    /// `Split::Value`: items worth less than this are upgraded, the rest are
+    /// downgraded. At or over it counts as downgrade material.
+    #[serde(default = "default_upgrade_to")]
+    pub upgrade_to: u64,
     /// With both kinds on: the share of each round's new trades that are
     /// upgrades, in percent (the rest are downgrades).
     pub upgrade_share: u32,
@@ -351,6 +377,8 @@ impl Default for BotConfig {
             upgrades: KindSettings { on: false, min_gain: -10, max_gain: 10, max_items: 3 },
             downgrades: KindSettings { on: false, min_gain: 5, max_gain: 25, max_items: 4 },
             top_items: 2,
+            split: Split::Top,
+            upgrade_to: default_upgrade_to(),
             upgrade_share: 50,
             min_gain: 5,
             max_gain: 20,
@@ -364,5 +392,27 @@ impl Default for BotConfig {
             use_best_price: true,
             keep: Vec::new(),
         }
+    }
+}
+
+/// The resale bot's settings (Resale screen).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ResaleConfig {
+    /// How far below the cheapest other listing to list, in R$.
+    pub undercut: u64,
+    /// Never list below this price. 0 would take a copy off sale, so 1 is the floor.
+    pub min_price: u64,
+    /// Minutes between rounds.
+    pub cycle_minutes: u64,
+    /// Seconds between two price changes, so writes are not a burst.
+    pub gap_secs: u64,
+    /// Leave out the items on the trade bot's keep list.
+    pub skip_kept: bool,
+}
+
+impl Default for ResaleConfig {
+    fn default() -> Self {
+        Self { undercut: 1, min_price: 1, cycle_minutes: 10, gap_secs: 5, skip_kept: true }
     }
 }

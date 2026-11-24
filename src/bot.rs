@@ -667,21 +667,47 @@ pub fn round_plan(settings: &BotConfig) -> Vec<(TradeKind, crate::config::KindSe
     }
 }
 
-/// Picks what to give this round. Downgrades give one of your `top` most
-/// valuable items, upgrades two up to `max_items` neighbouring items from
-/// everything below them, "any" one or two from anywhere. `tradable` is
-/// biggest first; the pick rotates with `seed`.
-pub fn pick_give(tradable: &[Piece], kind: TradeKind, max_items: usize, top: usize, seed: u64) -> Vec<Piece> {
+/// Where your items divide: what may be given in a downgrade, and what may be
+/// given in an upgrade.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SplitAt {
+    /// The first `n` items by value.
+    Top(usize),
+    /// Every item worth at least this much; the rest are upgrade material.
+    Value(u64),
+}
+
+/// Picks what to give this round. Downgrades give one of your most valuable
+/// items (the part above the split), upgrades two up to `max_items`
+/// neighbouring items from everything below it, "any" one or two from
+/// anywhere. `tradable` is biggest first; the pick rotates with `seed`.
+pub fn pick_give(tradable: &[Piece], kind: TradeKind, max_items: usize, split: SplitAt, seed: u64) -> Vec<Piece> {
     let n = tradable.len();
     if n == 0 {
         return Vec::new();
     }
-    let top = top.clamp(1, n);
+    let cut = match split {
+        SplitAt::Top(top) => top.clamp(1, n),
+        SplitAt::Value(threshold) => tradable.iter().filter(|piece| piece.value >= threshold).count(),
+    };
     match kind {
-        TradeKind::Downgrade => return vec![tradable[(seed as usize) % top].clone()],
+        TradeKind::Downgrade => {
+            // Nothing above the split: pay with an upgrade instead.
+            if cut == 0 {
+                return Vec::new();
+            }
+            return vec![tradable[(seed as usize) % cut].clone()];
+        }
         TradeKind::Upgrade => {
-            // Everything below your top items; with too few, the smallest two or more.
-            let rest = if n - top >= 2 { &tradable[top..] } else { &tradable[n.saturating_sub(2)..] };
+            // Everything below the split; with a top-item split and too few
+            // there, the smallest two or more. A value split is exact: items at
+            // or over the value are never given in an upgrade.
+            let below = &tradable[cut..];
+            let rest = if below.len() >= 2 || matches!(split, SplitAt::Value(_)) {
+                below
+            } else {
+                &tradable[n.saturating_sub(2)..]
+            };
             let most = max_items.clamp(2, TRADE_SIDE_LIMIT).min(rest.len());
             if most < 2 || n < 2 {
                 return Vec::new();
@@ -726,7 +752,11 @@ async fn new_trades(
         return;
     }
     let seed = round_number.wrapping_mul(7).wrapping_add(now_secs() / 60);
-    let mut give = pick_give(&tradable, kind, kind_settings.max_items, settings.top_items, seed);
+    let split = match settings.split {
+        crate::config::Split::Top => SplitAt::Top(settings.top_items),
+        crate::config::Split::Value => SplitAt::Value(settings.upgrade_to),
+    };
+    let mut give = pick_give(&tradable, kind, kind_settings.max_items, split, seed);
     if give.is_empty() {
         shared.log(LogKind::Problem, "Upgrades need at least two items you are willing to trade.");
         return;
@@ -906,27 +936,51 @@ mod tests {
     fn downgrades_top_items_and_upgrades_the_rest() {
         let tradable = pieces(&[9000, 8000, 7000, 3000, 2500, 2000, 900, 800, 700]);
         for seed in 0..30 {
-            let down = pick_give(&tradable, TradeKind::Downgrade, 4, 2, seed);
+            let down = pick_give(&tradable, TradeKind::Downgrade, 4, SplitAt::Top(2), seed);
             assert!(down[0].value >= 8000, "seed {seed} gave {}", down[0].value);
-            let up = pick_give(&tradable, TradeKind::Upgrade, 3, 2, seed);
+            let up = pick_give(&tradable, TradeKind::Upgrade, 3, SplitAt::Top(2), seed);
             assert!(up.len() >= 2 && up.iter().all(|piece| piece.value <= 7000), "seed {seed}");
         }
         // Upgrades reach the whole rest, not just the bottom.
-        assert!((0..30).any(|seed| pick_give(&tradable, TradeKind::Upgrade, 2, 2, seed)[0].value == 7000));
+        assert!((0..30).any(|seed| pick_give(&tradable, TradeKind::Upgrade, 2, SplitAt::Top(2), seed)[0].value == 7000));
+    }
+
+    #[test]
+    fn value_split_upgrades_under_the_threshold() {
+        let tradable = pieces(&[9000, 8000, 3000, 2500, 2000, 900]);
+        for seed in 0..30 {
+            let down = pick_give(&tradable, TradeKind::Downgrade, 3, SplitAt::Value(4000), seed);
+            assert_eq!(down.len(), 1);
+            assert!(down[0].value >= 4000, "seed {seed} gave {}", down[0].value);
+            let up = pick_give(&tradable, TradeKind::Upgrade, 3, SplitAt::Value(4000), seed);
+            assert!(up.len() >= 2 && up.iter().all(|piece| piece.value < 4000), "seed {seed}");
+        }
+        // Nothing over the value: no downgrades. Nothing under it: no upgrades.
+        assert!(pick_give(&tradable, TradeKind::Downgrade, 3, SplitAt::Value(100_000), 0).is_empty());
+        assert!(pick_give(&tradable, TradeKind::Upgrade, 3, SplitAt::Value(1), 0).is_empty());
+        // Exactly at the value counts as downgrade material, never upgrade material.
+        let at = pick_give(&tradable, TradeKind::Downgrade, 3, SplitAt::Value(8000), 0);
+        assert_eq!(at.len(), 1);
+        assert!(at[0].value >= 8000);
+        for seed in 0..30 {
+            assert!(pick_give(&tradable, TradeKind::Upgrade, 3, SplitAt::Value(8000), seed)
+                .iter()
+                .all(|piece| piece.value < 8000));
+        }
     }
 
     #[test]
     fn give_sets_match_the_kind() {
         let tradable = pieces(&[9000, 5000, 3000, 2000, 1500, 1000, 800]);
-        assert_eq!(pick_give(&tradable, TradeKind::Downgrade, 4, 2, 3).len(), 1);
-        assert_eq!(pick_give(&tradable, TradeKind::Upgrade, 3, 2, 1).len(), 3);
-        assert_eq!(pick_give(&tradable, TradeKind::Upgrade, 3, 2, 2).len(), 2);
+        assert_eq!(pick_give(&tradable, TradeKind::Downgrade, 4, SplitAt::Top(2), 3).len(), 1);
+        assert_eq!(pick_give(&tradable, TradeKind::Upgrade, 3, SplitAt::Top(2), 1).len(), 3);
+        assert_eq!(pick_give(&tradable, TradeKind::Upgrade, 3, SplitAt::Top(2), 2).len(), 2);
         for seed in 0..40 {
-            assert_eq!(pick_give(&tradable, TradeKind::Upgrade, 2, 2, seed).len(), 2);
+            assert_eq!(pick_give(&tradable, TradeKind::Upgrade, 2, SplitAt::Top(2), seed).len(), 2);
         }
         // Too few below the top: the smallest two.
-        assert_eq!(pick_give(&pieces(&[900, 500, 400]), TradeKind::Upgrade, 3, 2, 0).len(), 2);
-        assert!(pick_give(&pieces(&[500]), TradeKind::Upgrade, 3, 2, 0).is_empty());
+        assert_eq!(pick_give(&pieces(&[900, 500, 400]), TradeKind::Upgrade, 3, SplitAt::Top(2), 0).len(), 2);
+        assert!(pick_give(&pieces(&[500]), TradeKind::Upgrade, 3, SplitAt::Top(2), 0).is_empty());
     }
 
     #[test]
