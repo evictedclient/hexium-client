@@ -1308,15 +1308,20 @@ pub async fn resale_info(client: &ApiClient, me: u64, asset: u64, user_asset_id:
             lowest_other = Some(lowest_other.map_or(price, |lowest: u64| lowest.min(price)));
         }
     }
-    let (sales, rap) = match &data {
-        Ok(data) => (num_at(data, "sales"), num_at(data, "recentAveragePrice")),
-        Err(_) => (0, 0),
+    let (sales, rap, number_remaining) = match &data {
+        Ok(data) => (
+            num_at(data, "sales"),
+            num_at(data, "recentAveragePrice"),
+            num_at(data, "numberRemaining"),
+        ),
+        Err(_) => (0, 0, 0),
     };
     // The same answer carries the per-day history for the chart.
     let history = data.as_ref().ok().map(|data| ResaleData::from_value(asset, data));
     Ok(ResaleInfo {
         my_price,
         resellable: mine.is_some(),
+        number_remaining,
         lowest_other,
         other_sellers,
         sales,

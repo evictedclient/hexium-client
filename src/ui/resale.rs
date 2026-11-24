@@ -136,7 +136,7 @@ fn settings(app: &mut App, ui: &mut Ui) {
         .on_hover_text("The keep list is edited on the Trade bot screen.");
     muted(
         ui,
-        "A copy nobody else is selling is left alone: there is no price to go under. Copies of yours that are already the cheapest stay where they are.",
+        "A copy nobody else is selling is left alone: there is no price to go under. Copies of yours that are already the cheapest stay where they are. Roblox refuses a price under 60% of an item's RAP, and items it still sells itself, so those are left alone too.",
     );
 }
 

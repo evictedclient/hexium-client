@@ -1022,6 +1022,9 @@ pub struct ResaleInfo {
     pub my_price: Option<u64>,
     /// The site lists this copy as one that can be put on sale at all.
     pub resellable: bool,
+    /// Copies the creator still has to sell at its own price. While this is
+    /// above zero the item is still for sale and cannot be resold.
+    pub number_remaining: u64,
     /// Cheapest copy someone else is selling, if any.
     pub lowest_other: Option<u64>,
     /// How many other copies are on sale.
