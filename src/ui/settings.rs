@@ -51,6 +51,40 @@ pub fn show(app: &mut App, _cx: &Ctx, ui: &mut Ui) {
         });
     });
 
+    h2(ui, "Roblox cookie");
+    ui::tile(ui, 620.0, |ui| {
+        match app.cfg.masked_roblox_cookie() {
+            Some(masked) => muted(ui, &masked),
+            None => muted(ui, "No Roblox cookie stored. Clothing downloads will fail without it."),
+        }
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            let edit = egui::TextEdit::singleline(&mut app.roblox_cookie_input)
+                .hint_text("Paste .ROBLOSECURITY value here")
+                .password(true)
+                .desired_width(380.0);
+            ui.add(edit);
+            if ui.button("Save").clicked() {
+                let cookie = crate::config::Config::normalize_cookie(&app.roblox_cookie_input);
+                if !cookie.is_empty() {
+                    app.api.set_roblox_cookie(Some(&cookie));
+                    app.cfg.roblox_cookie = Some(cookie);
+                } else {
+                    app.api.set_roblox_cookie(None);
+                    app.cfg.roblox_cookie = None;
+                }
+                app.cfg.save();
+                app.roblox_cookie_input.clear();
+            }
+            if app.cfg.roblox_cookie.is_some() && ui.button("Clear").clicked() {
+                app.api.set_roblox_cookie(None);
+                app.cfg.roblox_cookie = None;
+                app.cfg.save();
+            }
+        });
+        muted(ui, "Used only to download clothing templates from assetdelivery.roblox.com. Never sent to hexium.");
+    });
+
     h2(ui, "Make it yours");
     ui::card_frame().show(ui, |ui| {
         ui.set_width(600.0);

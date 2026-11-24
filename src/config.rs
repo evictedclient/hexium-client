@@ -82,6 +82,9 @@ pub struct Config {
     /// Install new releases from GitHub on their own.
     #[serde(default = "default_true")]
     pub auto_update: bool,
+    /// Roblox .ROBLOSECURITY cookie — used to download clothing templates.
+    #[serde(default)]
+    pub roblox_cookie: Option<String>,
 }
 
 fn default_deal_alert_min() -> f32 {
@@ -154,6 +157,7 @@ impl Default for Config {
             shortcut_exe: None,
             bot: BotConfig::default(),
             auto_update: true,
+            roblox_cookie: None,
         }
     }
 }
@@ -218,6 +222,14 @@ impl Config {
 
     pub fn masked_session(&self) -> Option<String> {
         self.session_cookie.as_ref().map(|cookie| {
+            let tail: String = cookie.chars().rev().take(4).collect();
+            let tail: String = tail.chars().rev().collect();
+            format!("stored · {} chars · …{tail}", cookie.chars().count())
+        })
+    }
+
+    pub fn masked_roblox_cookie(&self) -> Option<String> {
+        self.roblox_cookie.as_ref().map(|cookie| {
             let tail: String = cookie.chars().rev().take(4).collect();
             let tail: String = tail.chars().rev().collect();
             format!("stored · {} chars · …{tail}", cookie.chars().count())

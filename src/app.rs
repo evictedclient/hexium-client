@@ -1142,6 +1142,8 @@ pub struct App {
     pub bot: Arc<crate::bot::Shared>,
     /// Group clothing scrape + bulk upload tool.
     pub clothing: ClothingUploaderState,
+    /// Settings screen: temporary input for a new Roblox cookie.
+    pub roblox_cookie_input: String,
     /// Ctrl+F: the current screen's search box takes the keyboard.
     pub focus_search: bool,
     /// Text size last applied (so egui's own Ctrl +/- zoom is not undone).
@@ -1226,12 +1228,14 @@ impl App {
             hwnd: Arc::new(AtomicIsize::new(0)),
             mass: None,
             clothing: ClothingUploaderState::default(),
+            roblox_cookie_input: String::new(),
             focus_search: false,
             applied_scale: 0.0,
             refreshed_at: Instant::now(),
             last_resize_check: Instant::now(),
         };
         app.reapply_overrides();
+        app.api.set_roblox_cookie(app.cfg.roblox_cookie.as_deref());
         if let Ok(mut gate) = app.notify_gate.lock() {
             gate.enabled = app.cfg.chat_notifications;
             gate.activity_enabled = app.cfg.activity_notifications;

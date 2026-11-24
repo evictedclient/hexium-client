@@ -73,6 +73,7 @@ pub struct ApiClient {
     cookies: RwLock<HashMap<String, String>>,
     csrf: RwLock<Option<String>>,
     last_auth_status: AtomicU16,
+    roblox_cookie: RwLock<Option<String>>,
 }
 
 impl ApiClient {
@@ -90,6 +91,7 @@ impl ApiClient {
             cookies: RwLock::new(HashMap::new()),
             csrf: RwLock::new(None),
             last_auth_status: AtomicU16::new(0),
+            roblox_cookie: RwLock::new(None),
         };
         client.set_session(session);
         client
@@ -104,6 +106,15 @@ impl ApiClient {
             .read()
             .map(|cookies| cookies.contains_key(SESSION_COOKIE))
             .unwrap_or(false)
+    }
+
+    pub fn set_roblox_cookie(&self, cookie: Option<&str>) {
+        if let Ok(mut stored) = self.roblox_cookie.write() {
+            *stored = cookie
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(str::to_string);
+        }
     }
 
     pub fn set_session(&self, session: Option<&str>) {
@@ -559,13 +570,20 @@ impl ApiClient {
         Ok((status, text, fresh_token))
     }
 
-    /// Raw bytes for a CDN image URL (thumbnails are public, but they still need a
-    /// browser-ish user agent).
+    /// Raw bytes for a CDN image URL. Thumbnails are public; asset downloads from
+    /// `assetdelivery.roblox.com` need a `.ROBLOSECURITY` cookie — sent automatically
+    /// when one is stored and the URL is from `roblox.com`.
     pub async fn fetch_image(&self, url: &str) -> Result<Vec<u8>> {
-        let response = self
+        let mut request = self
             .http
             .get(url)
-            .header("user-agent", USER_AGENT)
+            .header("user-agent", USER_AGENT);
+        if url.contains("roblox.com") {
+            if let Some(cookie) = self.roblox_cookie.read().ok().and_then(|g| g.clone()) {
+                request = request.header("cookie", format!(".ROBLOSECURITY={cookie}"));
+            }
+        }
+        let response = request
             .send()
             .await
             .map_err(|error| ApiError::Network(error.to_string()))?;
