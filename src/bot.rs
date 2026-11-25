@@ -3,7 +3,9 @@
 //! trades, makes new trades from your items (upgrades, downgrades or any) and
 //! counters inbound trades below your bar. Trades are sent one at a time with
 //! a wait between them and an hourly limit; without auto-send they wait in a
-//! review list until you approve them.
+//! review list until you approve them. Counter-only puts the bot on inbound
+//! trades alone: it builds the counters and queues them, and sends nothing on
+//! its own.
 
 use std::collections::{HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -19,6 +21,8 @@ use crate::config::{BotConfig, PlayerFilters};
 use crate::values::Values;
 
 const LOG_LINES: usize = 200;
+/// How many trades worth accepting the list keeps.
+const ACCEPT_LINES: usize = 12;
 
 /// One item in a bot trade.
 #[derive(Debug, Clone)]
@@ -70,6 +74,36 @@ pub fn gain_pct(give: u64, get: u64) -> f64 {
     (get as f64 - give as f64) / give as f64 * 100.0
 }
 
+/// Whether the bot may send a trade without asking first. Counter-only never
+/// does: its counters always wait in the review list for you.
+pub fn auto_send(settings: &BotConfig) -> bool {
+    settings.auto_send && !settings.counter_only
+}
+
+/// An inbound trade at or above your bar, listed under the log for you to take.
+#[derive(Debug, Clone)]
+pub struct Acceptable {
+    /// The inbound trade.
+    pub trade: u64,
+    pub user: u64,
+    pub name: String,
+    pub give: Vec<Piece>,
+    pub get: Vec<Piece>,
+    /// What you get back compared with what you give, in percent.
+    pub gain: f64,
+    pub at: Instant,
+}
+
+impl Acceptable {
+    pub fn give_total(&self) -> u64 {
+        self.give.iter().map(|piece| piece.value).sum()
+    }
+
+    pub fn get_total(&self) -> u64 {
+        self.get.iter().map(|piece| piece.value).sum()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogKind {
     Info,
@@ -94,6 +128,8 @@ pub struct State {
     pub next_round: Option<Instant>,
     pub next_send: Option<Instant>,
     pub queue: Vec<BotTrade>,
+    /// Inbound trades worth accepting, newest first.
+    pub accept: Vec<Acceptable>,
     pub log: VecDeque<LogLine>,
     pub sent: usize,
     pub countered: usize,
@@ -368,10 +404,29 @@ async fn round(shared: &Shared, api: &ApiClient, me: u64, settings: &BotConfig, 
         busy.extend(state.partners.iter().copied());
         busy.extend(state.queue.iter().map(|trade| trade.partner));
     }
-    if settings.counter && !shared.stopped() {
-        counters(shared, api, me, settings, &values, egui).await;
+    // Inbound trades are read every round, so trades that are no longer
+    // waiting (taken, declined, withdrawn) leave the list of trades worth
+    // accepting even when countering is off.
+    shared.phase("Reading inbound trades");
+    egui.request_repaint();
+    let inbound = match endpoints::trades(api, "inbound", None).await {
+        Ok(page) => {
+            let live: HashSet<u64> = page.items.iter().map(|summary| summary.id).collect();
+            shared.state.lock().unwrap().accept.retain(|entry| live.contains(&entry.trade));
+            page.items
+        }
+        Err(error) => {
+            if settings.counter || settings.counter_only {
+                shared.log(LogKind::Problem, format!("Could not read inbound trades: {error}"));
+            }
+            Vec::new()
+        }
+    };
+    if (settings.counter || settings.counter_only) && !shared.stopped() {
+        counters(shared, api, me, settings, &values, egui, inbound).await;
     }
-    if settings.send_new && !shared.stopped() {
+    // Counter-only: no new trades, and nothing the bot sends on its own.
+    if settings.send_new && !settings.counter_only && !shared.stopped() {
         let waiting = shared.state.lock().unwrap().queue.iter().filter(|trade| !trade.approved).count();
         if waiting >= settings.per_cycle.max(1) * 3 {
             shared.log(LogKind::Info, format!("{waiting} trades are waiting for review; not finding more until you go through them."));
@@ -554,16 +609,15 @@ pub fn range_for(give: u64, min_gain: i32, max_gain: i32) -> (u64, u64) {
 
 /// Inbound trades not yet looked at: good ones are pointed out, the rest
 /// get a counter from the sender's inventory when one fits your bar.
-async fn counters(shared: &Shared, api: &ApiClient, me: u64, settings: &BotConfig, values: &Values, egui: &egui::Context) {
-    shared.phase("Reading inbound trades");
-    egui.request_repaint();
-    let inbound = match endpoints::trades(api, "inbound", None).await {
-        Ok(page) => page.items,
-        Err(error) => {
-            shared.log(LogKind::Problem, format!("Could not read inbound trades: {error}"));
-            return;
-        }
-    };
+async fn counters(
+    shared: &Shared,
+    api: &ApiClient,
+    me: u64,
+    settings: &BotConfig,
+    values: &Values,
+    egui: &egui::Context,
+    inbound: Vec<models::TradeSummary>,
+) {
     for summary in inbound {
         if shared.stopped() {
             return;
@@ -592,7 +646,22 @@ async fn counters(shared: &Shared, api: &ApiClient, me: u64, settings: &BotConfi
         }
         let gain = gain_pct(give_total, get_total);
         if gain >= settings.min_gain as f64 {
-            shared.log(LogKind::Good, format!("{name}'s trade is worth accepting ({gain:+.0}% at adjusted values). Open it in Trades."));
+            let mut state = shared.state.lock().unwrap();
+            state.accept.retain(|other| other.trade != summary.id);
+            state.accept.insert(
+                0,
+                Acceptable {
+                    trade: summary.id,
+                    user: their_offer.user_id,
+                    name: name.clone(),
+                    give: give.clone(),
+                    get: get.clone(),
+                    gain,
+                    at: Instant::now(),
+                },
+            );
+            state.accept.truncate(ACCEPT_LINES);
+            state.log(LogKind::Good, format!("{name}'s trade is worth accepting ({gain:+.0}% at adjusted values). Open it in Trades."));
             continue;
         }
         if let Some(kept) = give.iter().find(|piece| settings.keep.contains(&piece.asset)) {
@@ -628,7 +697,7 @@ async fn counters(shared: &Shared, api: &ApiClient, me: u64, settings: &BotConfi
                     get,
                     counter_of: Some(summary.id),
                     kind,
-                    approved: settings.auto_send,
+                    approved: auto_send(settings),
                 };
                 let mut state = shared.state.lock().unwrap();
                 state.log(LogKind::Info, format!("Counter for {name} ({gain:+.0}% as sent): {}", describe(&trade)));
@@ -849,14 +918,14 @@ async fn new_trades(
         egui.request_repaint();
         let Ok(items) = endpoints::collectibles_all(api, user_id).await else { continue };
         if let Some((get, kind)) = pick_checked(api, settings, values, &items, &giving, &rules).await {
-            let trade = BotTrade { id: 0, partner: user_id, name, give: give.clone(), get, counter_of: None, kind, approved: settings.auto_send };
+            let trade = BotTrade { id: 0, partner: user_id, name, give: give.clone(), get, counter_of: None, kind, approved: auto_send(settings) };
             shared.state.lock().unwrap().push(trade);
             made += 1;
             egui.request_repaint();
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
-    let what = if settings.auto_send { "queued to send" } else { "waiting for your review" };
+    let what = if auto_send(settings) { "queued to send" } else { "waiting for your review" };
     shared.log(LogKind::Info, format!("Found {made} trade(s), {what}."));
 }
 
@@ -884,6 +953,14 @@ mod tests {
         assert_eq!(gone.len(), 1);
         assert_eq!(gone[0].copy, 2);
         assert!(missing(&give, &[1, 2, 3].into_iter().collect()).is_empty());
+    }
+
+    #[test]
+    fn counter_only_never_sends_on_its_own() {
+        let settings = BotConfig { auto_send: true, ..BotConfig::default() };
+        assert!(auto_send(&settings));
+        assert!(!auto_send(&BotConfig { auto_send: false, ..settings.clone() }));
+        assert!(!auto_send(&BotConfig { counter_only: true, ..settings }));
     }
 
     #[test]

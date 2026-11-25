@@ -1783,6 +1783,16 @@ impl App {
         self.load_trade_detail(id);
     }
 
+    /// Opens an inbound trade from elsewhere in the app (the bot's list of
+    /// trades worth accepting).
+    pub fn open_inbound_trade(&mut self, id: u64) {
+        self.view = View::Trades;
+        self.trades.selected = Some(id);
+        self.trades.detail = Load::Idle;
+        self.on_view_enter();
+        self.load_trade_detail(id);
+    }
+
     fn load_trade_detail(&mut self, id: u64) {
         self.trades.detail = Load::Busy;
         let cx = self.cx();

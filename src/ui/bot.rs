@@ -38,6 +38,8 @@ pub fn show(app: &mut App, cx: &Ctx, ui: &mut Ui) {
     review(app, cx, ui);
     ui.add_space(10.0);
     log(app, ui);
+    ui.add_space(10.0);
+    accepts(app, cx, ui);
 }
 
 fn status(app: &mut App, ui: &mut Ui) {
@@ -76,7 +78,7 @@ fn status(app: &mut App, ui: &mut Ui) {
                         shared.run_now();
                     }
                 } else if !confirming && ui.add(egui::Button::new(RichText::new("Start").strong()).fill(ui::tint(accent(), 70))).clicked() {
-                    if app.cfg.bot.auto_send {
+                    if bot::auto_send(&app.cfg.bot) {
                         confirming = true;
                     } else {
                         app.start_bot();
@@ -124,9 +126,17 @@ fn status(app: &mut App, ui: &mut Ui) {
 fn settings_left(app: &mut App, ui: &mut Ui) {
     let bot = &mut app.cfg.bot;
     ui::eyebrow(ui, "What it does");
-    ui.checkbox(&mut bot.send_new, "Make and send new trades");
+    let counter_only = bot.counter_only;
+    ui.add_enabled_ui(!counter_only, |ui| {
+        ui.checkbox(&mut bot.send_new, "Make and send new trades");
+    });
     ui.checkbox(&mut bot.counter, "Counter inbound trades below my bar")
-        .on_hover_text("Inbound trades already at or above your lowest gain (Other trades and counters) are pointed out in the log for you to accept; the bot never accepts or declines.");
+        .on_hover_text("Inbound trades already at or above your lowest gain (Other trades and counters) are pointed out under the log for you to accept; the bot never accepts or declines.");
+    ui.checkbox(&mut bot.counter_only, "Counter only")
+        .on_hover_text("Reads inbound trades and nothing else. Counters are put together and wait in the review list for you to send, no new trades are found, and the bot sends nothing on its own.");
+    if counter_only {
+        muted(ui, "Counter only: counters wait in the list above; nothing goes out until you press Send.");
+    }
     ui.add_space(6.0);
     kind(ui, "Upgrades", "Give two or more items for fewer, better ones.", "Most items I give", &mut bot.upgrades);
     ui.add_space(4.0);
@@ -221,8 +231,14 @@ fn settings_right(app: &mut App, cx: &Ctx, ui: &mut Ui) {
     {
         let bot = &mut app.cfg.bot;
         ui::eyebrow(ui, "Sending");
-        ui.checkbox(&mut bot.auto_send, "Send on its own")
-            .on_hover_text("Off: trades wait below for you to send or skip.");
+        let counter_only = bot.counter_only;
+        ui.add_enabled_ui(!counter_only, |ui| {
+            ui.checkbox(&mut bot.auto_send, "Send on its own")
+                .on_hover_text("Off: trades wait below for you to send or skip.");
+        });
+        if counter_only {
+            muted(ui, "Off while counter only is on.");
+        }
         egui::Grid::new("bot-sending").num_columns(2).spacing(egui::vec2(12.0, 4.0)).show(ui, |ui| {
             ui.label("At most");
             ui.add(egui::DragValue::new(&mut bot.per_hour).range(1..=u32::MAX).suffix(" trades an hour"));
@@ -385,6 +401,53 @@ fn log(app: &mut App, ui: &mut Ui) {
             ui.label(RichText::new(ago(line.at)).size(11.0).color(MUTED));
             ui.label(RichText::new(&line.text).size(12.0).color(color));
         });
+    }
+}
+
+/// Inbound trades the bot judged worth taking, under the log: what you would
+/// give and get, and a way into Trades to accept them yourself.
+fn accepts(app: &mut App, cx: &Ctx, ui: &mut Ui) {
+    let list: Vec<bot::Acceptable> = app.bot.state.lock().unwrap().accept.clone();
+    ui::eyebrow(ui, &format!("Trades worth accepting ({})", list.len()));
+    muted(
+        ui,
+        "Inbound trades at or above your lowest gain, at adjusted values. Opening one shows it in Trades; accepting or declining stays with you.",
+    );
+    if list.is_empty() {
+        muted(ui, "Nothing yet. The bot adds a trade here when one is worth taking.");
+        return;
+    }
+    let mut profile: Option<u64> = None;
+    let mut open_item: Option<(u64, String)> = None;
+    let mut open_trade: Option<u64> = None;
+    let width = (ui.available_width() - 16.0).max(320.0);
+    for entry in &list {
+        ui::tile(ui, width, |ui| {
+            ui.horizontal(|ui| {
+                if ui::player_card::link(ui, cx, entry.user, RichText::new(&entry.name).strong()).clicked() {
+                    profile = Some(entry.user);
+                }
+                ui::player_card::club_badge(ui, cx, entry.user);
+                ui.label(RichText::new(format!("{:+.1}%", entry.gain)).strong().color(GREEN));
+                ui.label(RichText::new(ago(entry.at)).size(11.0).color(MUTED));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.small_button("Open in Trades").clicked() {
+                        open_trade = Some(entry.trade);
+                    }
+                });
+            });
+            side(ui, cx, "You give", &entry.give, entry.give_total(), &mut open_item);
+            side(ui, cx, "You get", &entry.get, entry.get_total(), &mut open_item);
+        });
+    }
+    if let Some(user) = profile {
+        app.open_profile(user);
+    }
+    if let Some((asset, name)) = open_item {
+        app.open_item(asset, &name);
+    }
+    if let Some(trade) = open_trade {
+        app.open_inbound_trade(trade);
     }
 }
 

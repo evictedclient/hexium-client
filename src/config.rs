@@ -330,6 +330,10 @@ pub struct BotConfig {
     pub send_new: bool,
     /// Answer inbound trades below your bar with a counter.
     pub counter: bool,
+    /// Only answer inbound trades: counters are built and queued for you, and
+    /// no new trades are found or sent on the bot's own.
+    #[serde(default)]
+    pub counter_only: bool,
     pub upgrades: KindSettings,
     pub downgrades: KindSettings,
     /// Downgrades give from your this-many most valuable items; upgrades
@@ -374,6 +378,7 @@ impl Default for BotConfig {
         Self {
             send_new: true,
             counter: true,
+            counter_only: false,
             upgrades: KindSettings { on: false, min_gain: -10, max_gain: 10, max_items: 3 },
             downgrades: KindSettings { on: false, min_gain: 5, max_gain: 25, max_items: 4 },
             top_items: 2,
