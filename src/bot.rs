@@ -379,6 +379,34 @@ pub fn describe(trade: &BotTrade) -> String {
     )
 }
 
+/// How many pages of inbound trades a round reads (100 each, newest first).
+const INBOUND_PAGES: usize = 5;
+
+/// Every inbound trade, newest first: a busy inbox is read in full, not just
+/// its newest page. `None` when a page could not be read, so a partial list
+/// never prunes the list of trades worth accepting.
+async fn inbound_trades(shared: &Shared, api: &ApiClient, complain: bool) -> Option<Vec<models::TradeSummary>> {
+    let mut trades = Vec::new();
+    let mut cursor: Option<String> = None;
+    for _ in 0..INBOUND_PAGES {
+        let page = match endpoints::trades(api, "inbound", cursor.as_deref()).await {
+            Ok(page) => page,
+            Err(error) => {
+                if complain {
+                    shared.log(LogKind::Problem, format!("Could not read inbound trades: {error}"));
+                }
+                return None;
+            }
+        };
+        trades.extend(page.items);
+        cursor = page.next;
+        if cursor.is_none() {
+            break;
+        }
+    }
+    Some(trades)
+}
+
 /// One round: read your inventory and trades, counter, then find new trades.
 async fn round(shared: &Shared, api: &ApiClient, me: u64, settings: &BotConfig, egui: &egui::Context) {
     let values: Arc<Values> = crate::ui::item_card::current_values();
@@ -409,21 +437,12 @@ async fn round(shared: &Shared, api: &ApiClient, me: u64, settings: &BotConfig, 
     // accepting even when countering is off.
     shared.phase("Reading inbound trades");
     egui.request_repaint();
-    let inbound = match endpoints::trades(api, "inbound", None).await {
-        Ok(page) => {
-            let live: HashSet<u64> = page.items.iter().map(|summary| summary.id).collect();
-            shared.state.lock().unwrap().accept.retain(|entry| live.contains(&entry.trade));
-            page.items
+    if let Some(inbound) = inbound_trades(shared, api, settings.counter || settings.counter_only).await {
+        let live: HashSet<u64> = inbound.iter().map(|summary| summary.id).collect();
+        shared.state.lock().unwrap().accept.retain(|entry| live.contains(&entry.trade));
+        if (settings.counter || settings.counter_only) && !shared.stopped() {
+            counters(shared, api, me, settings, &values, egui, inbound).await;
         }
-        Err(error) => {
-            if settings.counter || settings.counter_only {
-                shared.log(LogKind::Problem, format!("Could not read inbound trades: {error}"));
-            }
-            Vec::new()
-        }
-    };
-    if (settings.counter || settings.counter_only) && !shared.stopped() {
-        counters(shared, api, me, settings, &values, egui, inbound).await;
     }
     // Counter-only: no new trades, and nothing the bot sends on its own.
     if settings.send_new && !settings.counter_only && !shared.stopped() {

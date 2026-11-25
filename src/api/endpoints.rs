@@ -170,12 +170,18 @@ pub const TRADE_TABS: [(&str, &str); 4] = [
     ("inactive", "Inactive"),
 ];
 
-/// Same query the site builds: `cursor` is always sent, empty for the first page.
+/// Same query the site builds: `cursor` is always sent, empty for the first
+/// page. The API pages 10 at a time unless told otherwise and sorts oldest
+/// first by default, so ask for the largest page it allows, newest first.
 pub async fn trades(client: &ApiClient, tab: &str, cursor: Option<&str>) -> Result<TradesPage> {
     let value = client
         .get_query(
             &api("trades", &format!("/v1/trades/{tab}")),
-            &[("cursor", cursor.unwrap_or_default().to_string())],
+            &[
+                ("limit", "100".to_string()),
+                ("cursor", cursor.unwrap_or_default().to_string()),
+                ("sortOrder", "Desc".to_string()),
+            ],
         )
         .await?;
     let items: Vec<TradeSummary> = first_array(&value, &["data"])
