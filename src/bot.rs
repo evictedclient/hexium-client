@@ -441,7 +441,7 @@ async fn round(shared: &Shared, api: &ApiClient, me: u64, settings: &BotConfig, 
         let live: HashSet<u64> = inbound.iter().map(|summary| summary.id).collect();
         shared.state.lock().unwrap().accept.retain(|entry| live.contains(&entry.trade));
         if (settings.counter || settings.counter_only) && !shared.stopped() {
-            counters(shared, api, me, settings, &values, egui, inbound).await;
+            counters(shared, api, me, settings, &values, &mine, egui, inbound).await;
         }
     }
     // Counter-only: no new trades, and nothing the bot sends on its own.
@@ -626,18 +626,33 @@ pub fn range_for(give: u64, min_gain: i32, max_gain: i32) -> (u64, u64) {
     (at(low.max(-90)), at(high.max(-90)))
 }
 
-/// Inbound trades not yet looked at: good ones are pointed out, the rest
-/// get a counter from the sender's inventory when one fits your bar.
+/// Inbound trades not yet looked at: good ones are pointed out, the rest get
+/// a counter built the way a new trade is — your side picked from your own
+/// inventory by the split and the round's kind, not the items they asked for.
 async fn counters(
     shared: &Shared,
     api: &ApiClient,
     me: u64,
     settings: &BotConfig,
     values: &Values,
+    mine: &[models::Collectible],
     egui: &egui::Context,
     inbound: Vec<models::TradeSummary>,
 ) {
-    for summary in inbound {
+    // What a counter may give: the same list new trades pick from.
+    let mut tradable: Vec<Piece> = mine
+        .iter()
+        .filter(|item| !settings.keep.contains(&item.id))
+        .map(|item| item_piece(values, settings, item))
+        .filter(|piece| piece.value > 0)
+        .collect();
+    tradable.sort_by(|a, b| b.value.cmp(&a.value));
+    let split = match settings.split {
+        crate::config::Split::Top => SplitAt::Top(settings.top_items),
+        crate::config::Split::Value => SplitAt::Value(settings.upgrade_to),
+    };
+    let plan = round_plan(settings);
+    for (index, summary) in inbound.into_iter().enumerate() {
         if shared.stopped() {
             return;
         }
@@ -655,7 +670,7 @@ async fn counters(
         let to_piece = |asset: &models::TradeAsset| piece(values, settings, asset.user_asset_id, asset.asset_id, &asset.name, asset.rap);
         let mut give: Vec<Piece> = my_offer.assets.iter().map(to_piece).collect();
         let mut get: Vec<Piece> = their_offer.assets.iter().map(to_piece).collect();
-        // Both sides at adjusted values.
+        // Both sides at adjusted values, to judge the trade as it was sent.
         reprice(api, values, settings, &mut give).await;
         reprice(api, values, settings, &mut get).await;
         let give_total = give.iter().map(|piece| piece.value).sum::<u64>() + my_offer.robux.unwrap_or(0);
@@ -683,39 +698,45 @@ async fn counters(
             state.log(LogKind::Good, format!("{name}'s trade is worth accepting ({gain:+.0}% at adjusted values). Open it in Trades."));
             continue;
         }
-        if let Some(kept) = give.iter().find(|piece| settings.keep.contains(&piece.asset)) {
-            shared.log(LogKind::Info, format!("{name} asks for {}, which you keep; left alone.", kept.name));
-            continue;
-        }
-        if my_offer.robux.is_some() || their_offer.robux.is_some() || give.is_empty() {
-            shared.log(LogKind::Info, format!("{name}'s trade has Robux in it ({gain:+.0}%); counter it yourself if you want."));
-            continue;
-        }
         shared.phase(&format!("Countering {name}"));
         egui.request_repaint();
+        if shared.state.lock().unwrap().queue.iter().any(|trade| trade.partner == their_offer.user_id) {
+            shared.log(LogKind::Info, format!("A counter for {name} is already waiting; left their other trades alone."));
+            continue;
+        }
         let Ok(theirs) = endpoints::collectibles_all(api, their_offer.user_id).await else { continue };
-        let giving: HashSet<u64> = give.iter().map(|piece| piece.asset).collect();
-        let give_total: u64 = give.iter().map(|piece| piece.value).sum();
-        let (min, max) = range_for(give_total, settings.min_gain, settings.max_gain);
+        // Your side of the counter: the pick a new trade of this kind would give.
+        let (kind, kind_settings, _) = plan[index % plan.len()];
+        let seed = summary.id.wrapping_mul(7).wrapping_add(now_secs() / 60);
+        let mut counter_give = pick_give(&tradable, kind, kind_settings.max_items, split, seed);
+        if counter_give.is_empty() {
+            shared.log(LogKind::Info, format!("{name}'s trade is {gain:+.0}%; nothing of yours fits a counter."));
+            continue;
+        }
+        reprice(api, values, settings, &mut counter_give).await;
+        let counter_total: u64 = counter_give.iter().map(|piece| piece.value).sum();
+        let (min, max) = range_for(counter_total, kind_settings.min_gain, kind_settings.max_gain);
         let rules = RangeRules {
             min,
             max,
-            my_count: give.len(),
-            my_best: give.iter().map(|piece| piece.value).max().unwrap_or(0),
-            upgrade: false,
-            downgrade: false,
-            max_items: TRADE_SIDE_LIMIT,
+            my_count: counter_give.len(),
+            my_best: counter_give.iter().map(|piece| piece.value).max().unwrap_or(0),
+            upgrade: kind == TradeKind::Upgrade,
+            downgrade: kind == TradeKind::Downgrade,
+            // Downgrades cap what comes back; upgrades get fewer than they give anyway.
+            max_items: if kind == TradeKind::Downgrade { kind_settings.max_items.clamp(2, TRADE_SIDE_LIMIT) } else { TRADE_SIDE_LIMIT },
         };
+        let giving: HashSet<u64> = counter_give.iter().map(|piece| piece.asset).collect();
         match pick_checked(api, settings, values, &theirs, &giving, &rules).await {
-            Some((get, kind)) => {
+            Some((picked, picked_kind)) => {
                 let trade = BotTrade {
                     id: 0,
                     partner: their_offer.user_id,
                     name: name.clone(),
-                    give,
-                    get,
+                    give: counter_give,
+                    get: picked,
                     counter_of: Some(summary.id),
-                    kind,
+                    kind: picked_kind,
                     approved: auto_send(settings),
                 };
                 let mut state = shared.state.lock().unwrap();
