@@ -173,6 +173,8 @@ pub enum Msg {
     /// A watchlist alert was clicked: open that item.
     OpenItem(u64, String),
     TradeStats(Res<TradeStats>),
+    /// Completed trades read for the stats so far, of how many.
+    TradeStatsProgress(usize, usize),
     Owners(u64, Res<Vec<endpoints::AssetOwner>>),
     /// Owners for the trade helpers: (the wanted assets, result).
     HelperOwners(Vec<u64>, Res<Vec<Candidate>>),
@@ -845,6 +847,8 @@ pub struct TradesState {
     /// Showing the statistics instead of a list.
     pub show_stats: bool,
     pub stats: Load<TradeStats>,
+    /// Completed trades read for the stats so far, of how many.
+    pub stats_progress: (usize, usize),
     pub helper: TradeHelper,
 }
 
@@ -976,6 +980,10 @@ pub struct MassStatus {
 /// Mass send has no upper limits. The wait keeps a short floor: Hexium
 /// rate-limits trade sends, and back-to-back sends get refused.
 pub const MASS_MIN_GAP: u64 = 1;
+
+/// How many pages of completed trades the stats read (100 each), so a long
+/// history is covered without an endless run of requests.
+pub const COMPLETED_PAGES: usize = 20;
 
 /// The Market screen: Heximons' value changes, sales, trade ads and leaderboard.
 #[derive(Default)]
@@ -2126,34 +2134,42 @@ impl App {
         }
     }
 
-    /// Statistics over your last 40 completed trades, at today's values.
+    /// Statistics over every completed trade the tab lists, at today's values.
     pub fn load_trade_stats(&mut self) {
         if !self.trades.stats.is_idle() {
             return;
         }
         let Some(me) = self.me_id() else { return };
         self.trades.stats = Load::Busy;
+        self.trades.stats_progress = (0, 0);
         let values = self.values.clone();
         let cx = self.cx();
         let api = cx.api.clone();
+        let (tx, egui) = (cx.tx.clone(), self.egui.clone());
         cx.spawn(async move {
             let mut ids: Vec<(u64, u64, String, String)> = Vec::new();
             let mut cursor: Option<String> = None;
-            for _ in 0..3 {
+            // Every completed trade, not just the newest page: the tab pages
+            // 100 at a time and the stats count the lot.
+            for _ in 0..COMPLETED_PAGES {
                 let page = match endpoints::trades(&api, "completed", cursor.as_deref()).await {
                     Ok(page) => page,
                     Err(error) => return Msg::TradeStats(Err(error.to_string())),
                 };
                 ids.extend(page.items.iter().map(|trade| (trade.id, trade.partner_id, trade.partner_name.clone(), trade.created.clone())));
                 match page.next {
-                    Some(next) if ids.len() < 40 => cursor = Some(next),
-                    _ => break,
+                    Some(next) => cursor = Some(next),
+                    None => break,
                 }
             }
-            ids.truncate(40);
             let mut stats = TradeStats::default();
             let mut partners: HashMap<String, usize> = HashMap::new();
-            for (id, partner_id, partner, created) in ids {
+            let total = ids.len();
+            for (done, (id, partner_id, partner, created)) in ids.into_iter().enumerate() {
+                // The screen counts the trades it has read so far.
+                if tx.send(Msg::TradeStatsProgress(done, total)).is_ok() {
+                    egui.request_repaint();
+                }
                 let Ok(detail) = endpoints::trade_offers(&api, id).await else { continue };
                 let worth = |offer: &models::TradeOffer| -> (i64, i64) {
                     let robux = offer.robux.unwrap_or(0) as i64;
@@ -2176,6 +2192,9 @@ impl App {
                     });
                 }
                 tokio::time::sleep(Duration::from_millis(150)).await;
+            }
+            if tx.send(Msg::TradeStatsProgress(total, total)).is_ok() {
+                egui.request_repaint();
             }
             let mut partners: Vec<(String, usize)> = partners.into_iter().collect();
             partners.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
@@ -4298,7 +4317,11 @@ impl App {
                 }
             }
             Msg::ActivityChanged => self.load_session(),
-            Msg::TradeStats(result) => self.trades.stats = into_load(result),
+            Msg::TradeStats(result) => {
+                self.trades.stats = into_load(result);
+                self.trades.stats_progress = (0, 0);
+            }
+            Msg::TradeStatsProgress(done, total) => self.trades.stats_progress = (done, total),
             Msg::Owners(asset, result) => {
                 if matches!(&self.catalog.owners, Some((shown, _)) if *shown == asset) {
                     self.catalog.owners = Some((asset, into_load(result)));

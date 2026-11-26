@@ -375,7 +375,7 @@ pub fn side_value(values: &crate::values::Values, offer: &TradeOffer) -> u64 {
         .sum()
 }
 
-/// Your last completed trades, judged at today's Heximons values.
+/// Your completed trades, judged at today's Heximons values.
 fn stats(app: &mut App, cx: &Ctx, ui: &mut Ui) {
     app.load_trade_stats();
     let mut open_profile_name: Option<String> = None;
@@ -437,7 +437,18 @@ fn stats(app: &mut App, cx: &Ctx, ui: &mut Ui) {
             }
         }
         Load::Err(error) => failed(ui, &format!("Could not work out the stats: {error}")),
-        _ => waiting(ui, "your completed trades (this reads each one)"),
+        _ => {
+            let (done, total) = app.trades.stats_progress;
+            ui.horizontal(|ui| {
+                ui.add(egui::Spinner::new().size(13.0).color(accent()));
+                let text = if total > 0 {
+                    format!("Read {done} of {total} completed trades…")
+                } else {
+                    "Reading your completed trades…".to_string()
+                };
+                ui.label(RichText::new(text).size(12.5).color(MUTED));
+            });
+        }
     }
     if let Some(id) = open_profile_id {
         app.open_profile(id);
